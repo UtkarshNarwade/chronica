@@ -1,0 +1,7 @@
+# Chronica: Digital Forensics Incident Timeline & Evidence Collection Tool
+# AIORI-3 PS-013 Dependencies
+
+streamlit>=1.35.0
+reportlab>=4.1.0
+pytest>=8.0.0
+pandas>=2.2.0

@@ -1,0 +1,175 @@
+{
+  "scenario_id": "scenario_3",
+  "scenario_name": "Scenario 3: Degraded or Incomplete Evidence",
+  "description": "Stress-testing scenario with deliberate malformed records, invalid timestamp, missing identity fields, duplicate records, 45-minute coverage gap, and inconclusive clock skew.",
+  "reference_source": "system_degraded.log",
+  "known_clock_offsets_sec": {
+    "host-sensor-99": 0.0
+  },
+  "known_timezones": {
+    "system_degraded.log": "UTC",
+    "host-sensor-99": "UTC"
+  },
+  "expected_events": [
+    {
+      "ground_truth_id": "gt_3_1",
+      "expected_order_index": 1,
+      "true_utc_iso": "2026-10-12T11:00:00.000000Z",
+      "source_identifier": "gateway-fw",
+      "expected_raw_pattern": "COMMAND=/bin/dmesg",
+      "expected_request_id": null,
+      "expected_severity": "INFO",
+      "expected_category": "SYSTEM",
+      "is_anomaly": false,
+      "anomaly_type": null
+    },
+    {
+      "ground_truth_id": "gt_3_2",
+      "expected_order_index": 2,
+      "true_utc_iso": "2026-10-12T11:00:01.000000Z",
+      "source_identifier": "host-sensor-99",
+      "expected_raw_pattern": "Telemetry heartbeat",
+      "expected_request_id": "isolated-anchor-77",
+      "expected_severity": "INFO",
+      "expected_category": "SYSTEM",
+      "is_anomaly": false,
+      "anomaly_type": null
+    },
+    {
+      "ground_truth_id": "gt_3_3",
+      "expected_order_index": 3,
+      "true_utc_iso": "",
+      "source_identifier": "host-sensor-99",
+      "expected_raw_pattern": "CORRUPTED_NON_JSON_TOKEN",
+      "expected_request_id": null,
+      "expected_severity": "INFO",
+      "expected_category": "SYSTEM",
+      "is_anomaly": true,
+      "anomaly_type": "MALFORMED"
+    },
+    {
+      "ground_truth_id": "gt_3_4",
+      "expected_order_index": 4,
+      "true_utc_iso": "2026-10-12T11:04:00.000000Z",
+      "source_identifier": "host-sensor-99",
+      "expected_raw_pattern": "threshold check passed",
+      "expected_request_id": null,
+      "expected_severity": "INFO",
+      "expected_category": "SYSTEM",
+      "is_anomaly": false,
+      "anomaly_type": null
+    },
+    {
+      "ground_truth_id": "gt_3_5",
+      "expected_order_index": 5,
+      "true_utc_iso": "2026-10-12T11:05:00.000000Z",
+      "source_identifier": "gateway-fw",
+      "expected_raw_pattern": "Accepted password for root",
+      "expected_request_id": null,
+      "expected_severity": "INFO",
+      "expected_category": "SYSTEM",
+      "is_anomaly": false,
+      "anomaly_type": null
+    },
+    {
+      "ground_truth_id": "gt_3_6",
+      "expected_order_index": 6,
+      "true_utc_iso": "2026-10-12T11:05:00.000000Z",
+      "source_identifier": "gateway-fw",
+      "expected_raw_pattern": "Accepted password for root",
+      "expected_request_id": null,
+      "expected_severity": "INFO",
+      "expected_category": "SYSTEM",
+      "is_anomaly": true,
+      "anomaly_type": "DUPLICATE"
+    },
+    {
+      "ground_truth_id": "gt_3_7",
+      "expected_order_index": 7,
+      "true_utc_iso": "2026-10-12T11:10:00.000000Z",
+      "source_identifier": "gateway-fw",
+      "expected_raw_pattern": "Authentication failure",
+      "expected_request_id": null,
+      "expected_severity": "INFO",
+      "expected_category": "SYSTEM",
+      "is_anomaly": true,
+      "anomaly_type": "MISSING_FIELD"
+    },
+    {
+      "ground_truth_id": "gt_3_8",
+      "expected_order_index": 8,
+      "true_utc_iso": "",
+      "source_identifier": "host-sensor-99",
+      "expected_raw_pattern": "Clock glitch reported",
+      "expected_request_id": null,
+      "expected_severity": "INFO",
+      "expected_category": "SYSTEM",
+      "is_anomaly": true,
+      "anomaly_type": "INVALID_TS"
+    },
+    {
+      "ground_truth_id": "gt_3_9",
+      "expected_order_index": 9,
+      "true_utc_iso": "2026-10-12T11:15:00.000000Z",
+      "source_identifier": "gateway-fw",
+      "expected_raw_pattern": "CRITICAL_HARDWARE_FAULT",
+      "expected_request_id": null,
+      "expected_severity": "INFO",
+      "expected_category": "SYSTEM",
+      "is_anomaly": true,
+      "anomaly_type": "TRUNCATED"
+    },
+    {
+      "ground_truth_id": "gt_3_10",
+      "expected_order_index": 10,
+      "true_utc_iso": "2026-10-12T12:00:00.000000Z",
+      "source_identifier": "gateway-fw",
+      "expected_raw_pattern": "Reached target System Reboot",
+      "expected_request_id": null,
+      "expected_severity": "INFO",
+      "expected_category": "SYSTEM",
+      "is_anomaly": false,
+      "anomaly_type": null
+    },
+    {
+      "ground_truth_id": "gt_3_11",
+      "expected_order_index": 11,
+      "true_utc_iso": "2026-10-12T12:01:00.000000Z",
+      "source_identifier": "gateway-fw",
+      "expected_raw_pattern": "Server listening on 0.0.0.0",
+      "expected_request_id": null,
+      "expected_severity": "INFO",
+      "expected_category": "SYSTEM",
+      "is_anomaly": false,
+      "anomaly_type": null
+    },
+    {
+      "ground_truth_id": "gt_3_12",
+      "expected_order_index": 12,
+      "true_utc_iso": "2026-10-12T12:01:30.000000Z",
+      "source_identifier": "host-sensor-99",
+      "expected_raw_pattern": "Resumed telemetry collection",
+      "expected_request_id": null,
+      "expected_severity": "INFO",
+      "expected_category": "SYSTEM",
+      "is_anomaly": false,
+      "anomaly_type": null
+    }
+  ],
+  "expected_coverage_gaps": [
+    {
+      "host": "gateway-fw",
+      "start": "2026-10-12T11:15:00Z",
+      "end": "2026-10-12T12:00:00Z",
+      "duration_minutes": 45.0
+    }
+  ],
+  "expected_diagnostics_count": {
+    "A_PARSE_FAILURE": 1,
+    "C_TIMESTAMP_FAILURE": 1,
+    "E_MISSING_FIELD_WARNING": 1,
+    "F_COVERAGE_GAP": 1,
+    "G_UNRESOLVED_CLOCK_SKEW": 1,
+    "I_DUPLICATE_CANDIDATE": 1
+  }
+}

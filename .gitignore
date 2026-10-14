@@ -1,0 +1,25 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Data storage and local evidence
+data/investigations/
+data/*.db
+data/benchmark_evaluation_results.json
+*.log
+
+# Environment variables and secrets
+.env
+.env*.local
+*.env
+
+# Operating system artifacts
+.DS_Store
+Thumbs.db

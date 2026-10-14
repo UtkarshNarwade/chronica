@@ -1,0 +1,5 @@
+{"timestamp": "2026-10-12T11:00:01Z", "host": "host-sensor-99", "app": "sensor-agent", "level": "INFO", "request_id": "isolated-anchor-77", "message": "Telemetry heartbeat initialized."}
+{"timestamp": "2026-10-12T11:02:00Z", "host": "host-sensor-99", "level": "ERROR", "msg": CORRUPTED_NON_JSON_TOKEN
+{"timestamp": "2026-10-12T11:04:00Z", "host": "host-sensor-99", "app": "sensor-agent", "level": "INFO", "message": "Sensor threshold check passed."}
+{"timestamp": "2026-13-45T99:99:99Z", "host": "host-sensor-99", "app": "sensor-agent", "level": "WARN", "message": "Clock glitch reported."}
+{"timestamp": "2026-10-12T12:01:30Z", "host": "host-sensor-99", "app": "sensor-agent", "level": "INFO", "message": "Resumed telemetry collection following system reboot."}
