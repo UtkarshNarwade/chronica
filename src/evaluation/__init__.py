@@ -8,6 +8,7 @@ from src.evaluation.metrics import (
     CompleteEvaluationReport,
 )
 from src.evaluation.triage import TriageEvaluationProtocol, TriageTask
+from src.evaluation.runner import run_evaluation, run_benchmark
 
 __all__ = [
     "ScenarioGroundTruth",
@@ -18,4 +19,6 @@ __all__ = [
     "CompleteEvaluationReport",
     "TriageEvaluationProtocol",
     "TriageTask",
+    "run_evaluation",
+    "run_benchmark",
 ]

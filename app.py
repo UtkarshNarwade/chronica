@@ -61,6 +61,15 @@ SYNTHETIC_DIR = REPO_ROOT / "synthetic_data"
 repo = InvestigationRepository(data_root=DATA_DIR)
 pipeline = ForensicPipeline(repository=repo)
 
+# Helper to match scenarios by prefix or full name
+def find_scenario(scens_dict, target):
+    if target in scens_dict:
+        return scens_dict[target]
+    for k, v in scens_dict.items():
+        if k in target or target in k:
+            return v
+    return None
+
 # Auto-seed case_default with Scenario 2 on first launch if empty
 all_existing_invs = repo.list_investigations()
 if not any(i.investigation_id == "case_default" for i in all_existing_invs):
@@ -76,8 +85,9 @@ default_events = repo.load_events("case_default")
 if len(default_manifest.entries) == 0 and len(default_events) == 0:
     scen_gen = ScenarioGenerator(output_root=SYNTHETIC_DIR)
     scenarios_meta = scen_gen.generate_all()
-    if "scenario_2_clock_skew" in scenarios_meta:
-        s2_dir, gt_file = scenarios_meta["scenario_2_clock_skew"]
+    s2_match = find_scenario(scenarios_meta, "scenario_2")
+    if s2_match:
+        s2_dir, gt_file = s2_match
         gt = ScenarioGroundTruth.load_from_file(gt_file)
         inv = repo.get_investigation("case_default")
         if inv and gt.reference_source:
@@ -491,6 +501,13 @@ st.markdown(ENTERPRISE_DUAL_TONE_CSS, unsafe_allow_html=True)
 if "active_investigation_id" not in st.session_state:
     st.session_state.active_investigation_id = "case_default"
 
+# Handle pending case switch requested by scenario loader or case switcher
+if "pending_case_switch" in st.session_state:
+    target_id = st.session_state["pending_case_switch"]
+    st.session_state.active_investigation_id = target_id
+    st.session_state["ch_case_selector"] = target_id
+    del st.session_state["pending_case_switch"]
+
 if "clock_skew_enabled" not in st.session_state:
     st.session_state.clock_skew_enabled = True
 
@@ -541,7 +558,7 @@ sel_case = st.sidebar.selectbox(
     "Active Workspace",
     options=list(inv_titles.keys()),
     format_func=lambda x: inv_titles.get(x, x),
-    index=list(inv_titles.keys()).index(active_inv.investigation_id),
+    index=None if "ch_case_selector" in st.session_state else list(inv_titles.keys()).index(active_inv.investigation_id),
     key="ch_case_selector",
     label_visibility="collapsed",
 )
@@ -2009,95 +2026,162 @@ elif nav_section == "Forensic Reports & Export":
 # MODULE 10: SYNTHETIC BENCHMARK SUITE
 # =================================================================================================
 elif nav_section == "Synthetic Benchmark Suite":
+    def _ingest_scenario_into_investigation(target_scen_key: str, inv_id: str, inv_title: str, inv_desc: str):
+        sg = ScenarioGenerator(output_root=SYNTHETIC_DIR)
+        scens = sg.generate_all()
+        matched = find_scenario(scens, target_scen_key)
+        if not matched:
+            st.error(f"Failed to generate or locate scenario data for '{target_scen_key}'.")
+            return False
+        s_dir, gt_f = matched
+        gt = ScenarioGroundTruth.load_from_file(gt_f)
+
+        target_inv = repo.get_investigation(inv_id)
+        if not target_inv:
+            target_inv = repo.create_investigation(
+                investigation_id=inv_id,
+                title=inv_title,
+                description=inv_desc,
+                assigned_timezone=gt.known_timezones.get(gt.reference_source, "UTC"),
+            )
+        else:
+            target_inv.title = inv_title
+            target_inv.description = inv_desc
+            target_inv.assigned_timezone = gt.known_timezones.get(gt.reference_source, "UTC")
+
+        target_inv.reference_source = gt.reference_source
+        repo.update_investigation(target_inv)
+
+        count_ingested = 0
+        for f in sorted(s_dir.iterdir()):
+            if f.is_file() and not f.name.endswith(".json"):
+                tz = gt.known_timezones.get(f.name, "UTC")
+                pipeline.ingest_evidence_bytes(inv_id, f.name, f.read_bytes(), assigned_timezone=tz)
+                count_ingested += 1
+
+        st.session_state["pending_case_switch"] = inv_id
+        st.session_state.selected_event_id = None
+        if "pipeline_cache" in st.session_state:
+            del st.session_state["pipeline_cache"]
+
+        st.session_state["loaded_scenario_alert"] = {
+            "name": gt.scenario_name,
+            "inv_id": inv_id,
+            "files": count_ingested,
+            "ref_source": gt.reference_source or "Auto",
+        }
+        return True
+
+    st.markdown(
+        """
+        <div style="font-size: 15px; font-weight: 700; color: #0F172A; margin-bottom: 4px;">Ground-Truth Synthetic Scenarios</div>
+        <div style="font-size: 12px; color: #475569; margin-bottom: 12px;">Load any of the three standardized benchmark scenarios into an isolated workspace to analyze reconstructed timelines and test algorithms.</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
     scen_col1, scen_col2, scen_col3 = st.columns(3)
     with scen_col1:
         st.markdown(
             """
-            <div style="background: #FFFFFF; border: 1px solid #DCE3EC; border-radius: 4px; padding: 12px;">
-                <strong>Scenario 1: Clean Baseline</strong>
-                <p style="font-size: 11px; color: #475569; margin: 4px 0 8px 0;">Synchronized hosts, Nginx access, auth, and JSONL app logs.</p>
+            <div style="background: #FFFFFF; border: 1px solid #DCE3EC; border-radius: 4px; padding: 12px; min-height: 110px;">
+                <strong style="color: #0F172A;">Scenario 1: Clean Baseline</strong>
+                <p style="font-size: 11px; color: #475569; margin: 4px 0 8px 0;">Synchronized dual hosts, Nginx access, auth, and JSONL app logs. Perfect clock alignment.</p>
+                <span style="font-size: 10px; background: #EEF2F6; color: #0066CC; padding: 2px 6px; border-radius: 3px; font-weight: 600;">11 Records | 2 Hosts</span>
             </div>
             """,
             unsafe_allow_html=True,
         )
-        if st.button("Load Scenario 1 Baseline", key="load_scen_1_btn", use_container_width=True):
-            sg = ScenarioGenerator(output_root=SYNTHETIC_DIR)
-            scens = sg.generate_all()
-            if "scenario_1_clean_baseline" in scens:
-                s_dir, gt_f = scens["scenario_1_clean_baseline"]
-                gt = ScenarioGroundTruth.load_from_file(gt_f)
-                active_inv.reference_source = gt.reference_source
-                repo.update_investigation(active_inv)
-                for f in sorted(s_dir.iterdir()):
-                    if f.is_file() and not f.name.endswith(".json"):
-                        tz = gt.known_timezones.get(f.name, "UTC")
-                        pipeline.ingest_evidence_bytes(active_inv.investigation_id, f.name, f.read_bytes(), assigned_timezone=tz)
-                if "pipeline_cache" in st.session_state:
-                    del st.session_state["pipeline_cache"]
-                st.success("Scenario 1 loaded.")
+        st.markdown("<div style='height: 6px;'></div>", unsafe_allow_html=True)
+        if st.button("Load Scenario 1 Baseline", key="load_scen_1_btn", use_container_width=True, type="primary"):
+            if _ingest_scenario_into_investigation(
+                "scenario_1",
+                "case_scen_1",
+                "Scenario 1: Clean Baseline",
+                "Synchronized dual-host baseline: Nginx web access and auth events.",
+            ):
                 st.rerun()
 
     with scen_col2:
         st.markdown(
             """
-            <div style="background: #FFFFFF; border: 1px solid #DCE3EC; border-radius: 4px; padding: 12px;">
-                <strong>Scenario 2: Clock Skew (+180s)</strong>
-                <p style="font-size: 11px; color: #475569; margin: 4px 0 8px 0;">Host B has a +180s offset and EDT timezone; tests anchor discovery.</p>
+            <div style="background: #FFFFFF; border: 1px solid #DCE3EC; border-radius: 4px; padding: 12px; min-height: 110px;">
+                <strong style="color: #0F172A;">Scenario 2: Clock Skew (+180s)</strong>
+                <p style="font-size: 11px; color: #475569; margin: 4px 0 8px 0;">Host B has a +180s offset and EDT timezone; tests inter-host anchor discovery and robust median skew estimation.</p>
+                <span style="font-size: 10px; background: #EEF2F6; color: #0066CC; padding: 2px 6px; border-radius: 3px; font-weight: 600;">8 Records | +180s Drift</span>
             </div>
             """,
             unsafe_allow_html=True,
         )
-        if st.button("Load Scenario 2 Clock Skew", key="load_scen_2_btn", use_container_width=True):
-            sg = ScenarioGenerator(output_root=SYNTHETIC_DIR)
-            scens = sg.generate_all()
-            if "scenario_2_clock_skew" in scens:
-                s_dir, gt_f = scens["scenario_2_clock_skew"]
-                gt = ScenarioGroundTruth.load_from_file(gt_f)
-                active_inv.reference_source = gt.reference_source
-                repo.update_investigation(active_inv)
-                for f in sorted(s_dir.iterdir()):
-                    if f.is_file() and not f.name.endswith(".json"):
-                        tz = gt.known_timezones.get(f.name, "UTC")
-                        pipeline.ingest_evidence_bytes(active_inv.investigation_id, f.name, f.read_bytes(), assigned_timezone=tz)
-                if "pipeline_cache" in st.session_state:
-                    del st.session_state["pipeline_cache"]
-                st.success("Scenario 2 loaded.")
+        st.markdown("<div style='height: 6px;'></div>", unsafe_allow_html=True)
+        if st.button("Load Scenario 2 Clock Skew", key="load_scen_2_btn", use_container_width=True, type="primary"):
+            if _ingest_scenario_into_investigation(
+                "scenario_2",
+                "case_scen_2",
+                "Scenario 2: Clock Skew (+180s)",
+                "Host B with +180s clock offset and EDT timezone; testing anchor discovery.",
+            ):
                 st.rerun()
 
     with scen_col3:
         st.markdown(
             """
-            <div style="background: #FFFFFF; border: 1px solid #DCE3EC; border-radius: 4px; padding: 12px;">
-                <strong>Scenario 3: Degraded Evidence</strong>
-                <p style="font-size: 11px; color: #475569; margin: 4px 0 8px 0;">Malformed lines, 45-min gap, missing fields, corrupted timestamps.</p>
+            <div style="background: #FFFFFF; border: 1px solid #DCE3EC; border-radius: 4px; padding: 12px; min-height: 110px;">
+                <strong style="color: #0F172A;">Scenario 3: Degraded Evidence</strong>
+                <p style="font-size: 11px; color: #475569; margin: 4px 0 8px 0;">Malformed lines, 45-min coverage gap, missing fields, corrupted timestamps; tests defensive diagnostic detection.</p>
+                <span style="font-size: 10px; background: #EEF2F6; color: #0066CC; padding: 2px 6px; border-radius: 3px; font-weight: 600;">12 Records | 16 Diagnostics</span>
             </div>
             """,
             unsafe_allow_html=True,
         )
-        if st.button("Load Scenario 3 Degraded", key="load_scen_3_btn", use_container_width=True):
-            sg = ScenarioGenerator(output_root=SYNTHETIC_DIR)
-            scens = sg.generate_all()
-            if "scenario_3_degraded_evidence" in scens:
-                s_dir, gt_f = scens["scenario_3_degraded_evidence"]
-                gt = ScenarioGroundTruth.load_from_file(gt_f)
-                active_inv.reference_source = gt.reference_source
-                repo.update_investigation(active_inv)
-                for f in sorted(s_dir.iterdir()):
-                    if f.is_file() and not f.name.endswith(".json"):
-                        tz = gt.known_timezones.get(f.name, "UTC")
-                        pipeline.ingest_evidence_bytes(active_inv.investigation_id, f.name, f.read_bytes(), assigned_timezone=tz)
-                if "pipeline_cache" in st.session_state:
-                    del st.session_state["pipeline_cache"]
-                st.success("Scenario 3 loaded.")
+        st.markdown("<div style='height: 6px;'></div>", unsafe_allow_html=True)
+        if st.button("Load Scenario 3 Degraded", key="load_scen_3_btn", use_container_width=True, type="primary"):
+            if _ingest_scenario_into_investigation(
+                "scenario_3",
+                "case_scen_3",
+                "Scenario 3: Degraded Evidence",
+                "Malformed records, 45-min coverage gap, corrupted timestamps, missing fields.",
+            ):
+                st.rerun()
+
+    # Active Scenario Status Banner & Quick Navigation
+    if "loaded_scenario_alert" in st.session_state:
+        info = st.session_state["loaded_scenario_alert"]
+        st.markdown(
+            f"""
+            <div style="background: #F0FDF4; border: 1px solid #86EFAC; border-left: 4px solid #16A34A; border-radius: 5px; padding: 12px 16px; margin: 16px 0 10px 0;">
+                <div style="font-weight: 700; color: #15803D; font-size: 14px;">Active Workspace Loaded: {info['name']}</div>
+                <div style="font-size: 12px; color: #166534; margin-top: 4px;">
+                    Workspace ID: <code>{info['inv_id']}</code> &nbsp;|&nbsp; Ingested Files: <strong>{info['files']}</strong> &nbsp;|&nbsp; Reference Host: <strong>{info['ref_source']}</strong> &nbsp;|&nbsp; Active Events Indexed: <strong>{len(events)}</strong>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        act_c1, act_c2, act_c3 = st.columns(3)
+        with act_c1:
+            if st.button("Explore Reconstructed Timeline (Module 2)", key="goto_timeline_btn", use_container_width=True):
+                st.session_state.nav_section = "Event Discovery & Timeline"
+                st.rerun()
+        with act_c2:
+            if st.button("Inspect Entity Topology Graph (Module 3)", key="goto_topology_btn", use_container_width=True):
+                st.session_state.nav_section = "Threat Hunting & Topology"
+                st.rerun()
+        with act_c3:
+            if st.button("Analyze Clock-Skew Correction (Module 6)", key="goto_skew_btn", use_container_width=True):
+                st.session_state.nav_section = "Clock-Skew Synchronization"
                 st.rerun()
 
     st.markdown("---")
-    st.markdown("<strong>Quantitative Benchmark Evaluator</strong>", unsafe_allow_html=True)
-    if st.button("Execute Quantitative Benchmark Across All 3 Scenarios", type="primary", key="benchmark_eval_btn"):
-        from scripts.run_evaluation import run_evaluation
-        eval_reports = run_evaluation(data_dir=DATA_DIR, synthetic_dir=SYNTHETIC_DIR)
-        st.session_state["eval_reports"] = eval_reports
-        st.success("Benchmark evaluation completed across all 3 ground-truth scenarios.")
+    st.markdown("<div style='font-size: 15px; font-weight: 700; color: #0F172A; margin-bottom: 4px;'>Quantitative Benchmark Evaluator Across All 3 Scenarios</div>", unsafe_allow_html=True)
+    st.markdown("<div style='font-size: 12px; color: #475569; margin-bottom: 12px;'>Executes the complete ground-truth verification protocol across all three synthetic scenarios in a clean sandbox. Measures parsing coverage, inter-host skew estimation residuals, and temporal ordering concordance (Kendall's tau).</div>", unsafe_allow_html=True)
+
+    if st.button("Execute Quantitative Benchmark Across All 3 Scenarios", type="primary", key="benchmark_eval_btn", use_container_width=True):
+        with st.spinner("Executing quantitative ground-truth benchmark across Scenarios 1, 2, and 3..."):
+            from src.evaluation.runner import run_evaluation
+            eval_reports = run_evaluation(data_dir=DATA_DIR, synthetic_dir=SYNTHETIC_DIR, verbose=False)
+            st.session_state["eval_reports"] = eval_reports
+        st.toast("Benchmark evaluation completed across all 3 ground-truth scenarios.")
 
     if "eval_reports" in st.session_state:
         reports = st.session_state["eval_reports"]
@@ -2109,7 +2193,7 @@ elif nav_section == "Synthetic Benchmark Suite":
             ord_corr = rep.ordering_metric_corrected.pairwise_ordering_accuracy_percent if rep.ordering_metric_corrected else ord_uncorr
             tau_uncorr = rep.ordering_metric_normalized.kendall_tau
             tau_corr = rep.ordering_metric_corrected.kendall_tau if rep.ordering_metric_corrected else tau_uncorr
-            
+
             skew_info = "N/A"
             if rep.skew_metrics:
                 first_sk = list(rep.skew_metrics.values())[0]
@@ -2126,6 +2210,16 @@ elif nav_section == "Synthetic Benchmark Suite":
                 "Corrected Concordance": f"{ord_corr:.1f}% (τ={tau_corr:.3f})",
             })
         st.dataframe(pd.DataFrame(matrix_rows), use_container_width=True, hide_index=True)
+
+        bench_json_path = DATA_DIR / "benchmark_evaluation_results.json"
+        if bench_json_path.exists():
+            st.download_button(
+                "Download Benchmark Evaluation JSON",
+                data=bench_json_path.read_bytes(),
+                file_name="benchmark_evaluation_results.json",
+                mime="application/json",
+                key="dl_bench_json_btn",
+            )
 
 
 # =================================================================================================
