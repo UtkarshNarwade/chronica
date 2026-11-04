@@ -79,3 +79,11 @@ def test_headless_ui_interactive_actions_zero_errors():
     if at.button(key="crypto_verify_chain_btn"):
         at.button(key="crypto_verify_chain_btn").click().run()
         assert len(at.exception) == 0
+
+    # Test Synthetic Benchmark Suite quantitative evaluator
+    at.session_state["nav_section"] = "Synthetic Benchmark Suite"
+    at.run()
+    assert len(at.exception) == 0
+    if at.button(key="benchmark_eval_btn"):
+        at.button(key="benchmark_eval_btn").click().run()
+        assert len(at.exception) == 0

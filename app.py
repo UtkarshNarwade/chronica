@@ -2113,7 +2113,10 @@ elif nav_section == "Synthetic Benchmark Suite":
             skew_info = "N/A"
             if rep.skew_metrics:
                 first_sk = list(rep.skew_metrics.values())[0]
-                skew_info = f"Err: {first_sk.absolute_estimation_error_sec}s ({first_sk.estimation_status})"
+                if first_sk.absolute_estimation_error_sec is not None:
+                    skew_info = f"Err: {first_sk.absolute_estimation_error_sec:.2f}s ({first_sk.estimation_status})"
+                else:
+                    skew_info = f"{first_sk.estimation_status}"
 
             matrix_rows.append({
                 "Scenario": scen_name,
