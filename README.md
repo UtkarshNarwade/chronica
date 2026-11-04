@@ -2,7 +2,7 @@
 
 **AIORI-3 Cybersecurity Problem Statement PS-013: Incident Timeline and Evidence Collection for Small Teams**
 
-[![Test Suite](https://img.shields.io/badge/pytest-46%20passed-brightgreen.svg)]()
+[![Test Suite](https://img.shields.io/badge/pytest-104%20passed-brightgreen.svg)]()
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.14-blue.svg)]()
 [![License](https://img.shields.io/badge/license-MIT-green.svg)]()
 [![Offline](https://img.shields.io/badge/operation-100%25%20offline-success.svg)]()
@@ -19,7 +19,7 @@ Small IT teams and solo incident responders often face severe challenges during 
 - Quiet intervals that may look like log clearing.
 - Disconnected event identifiers.
 
-**Chronica** is a lightweight, offline-first digital forensics utility that ingests multi-source logs, preserves pristine raw evidence with cryptographic SHA-256 digests, normalizes timestamps to UTC, correlates events across systems, estimates clock offsets using robust median statistics, flags evidence gaps, and produces publication-ready incident reports in PDF, Markdown, CSV, and JSON.
+**Chronica** is a lightweight, offline-first digital forensics workbench that ingests multi-source logs, preserves pristine raw evidence with cryptographic SHA-256 digests, normalizes timestamps to UTC, correlates events across systems, estimates clock offsets using robust median statistics, flags evidence gaps, and produces publication-ready incident reports in PDF, Markdown, CSV, and JSON.
 
 ### Foundational Forensic Principle
 > **Treat evidence bytes, parsed fields, timing normalizations, clock-skew corrections, and conclusions as distinct entities.**
@@ -31,17 +31,21 @@ Small IT teams and solo incident responders often face severe challenges during 
 
 | Module | Forensic Feature | Implementation Details |
 |---|---|---|
-| **Evidence Ingestion** | Multi-file preservation | Read-only local storage, path traversal protection (`../`), configurable size limit (100MB). |
+| **Evidence Ingestion** | Multi-file preservation & archives | Read-only local storage, path traversal protection (`../`), .gz/.zip decompression, bomb guards. |
 | **Integrity Engine** | Cryptographic verification | Pre-ingestion SHA-256 streaming hashing (64KB chunks), structured JSON manifest, 1-click re-verification audit. |
-| **Log Parsers** | Multi-format support | RFC 3164 BSD & RFC 5424 Syslog (sshd, sudo), JSON Lines (JSONL), Apache/Nginx (CLF/Combined), CSV Firewall. |
+| **Audit Chain Ledger** | Tamper-evident chain of custody | Cryptographically linked SHA-256 hash chain (`audit_chain.jsonl`) recording ingestion, verification, annotations, and exports. |
+| **Log Parsers** | Multi-format ecosystem | RFC 3164 BSD & RFC 5424 Syslog, JSONL, Apache/Nginx, CSV Firewall, Linux `auditd`, Windows Event Logs (CSV/JSON), and Custom Named-Group Regex. |
 | **Format Detection** | Explainable autodetection | Transparent heuristic scoring sample lines against parser signatures with confidence scores. |
-| **Normalization** | Robust UTC conversion | Microsecond precision, explicit offset conversion, yearless BSD syslog inference tracking (`year_inferred=True`). |
-| **Clock-Skew Engine** | Offset estimation | Shared anchor discovery (`request_id`, `session_id`), robust median statistics, MAD spread measurement, inconclusive marking for $< 2$ anchors. |
-| **Timeline Explorer** | Multi-axis chronology | Sorting by Normalized UTC, Corrected UTC, or Original sequence; deterministic tie-breaking on `(evidence_id, line_number)`. |
-| **Search & Filtering** | Conjunctive faceted search | Full-text keyword querying + combined filters by Host, User, IP, Severity, Category, Time range. |
+| **Normalization** | Robust UTC conversion | Microsecond precision, explicit offset conversion, yearless BSD syslog rollover tracking (`Dec -> Jan`), and DST fold ambiguity detection. |
+| **Clock-Skew Engine** | Offset & drift estimation | Multi-key anchor discovery (`REQUEST_ID`, `SESSION_ID`, `INVESTIGATOR_CONFIRMED`), robust median statistics, MAD spread, Theil-Sen linear drift rate (`ppm`), and causal latency guard. |
+| **Heuristics & Threat Hunting** | Explainable forensic leads | Deterministic heuristics mapped to MITRE ATT&CK techniques: Brute Force then Success, Privilege Escalation, Sensitive Data Export, and Log/Clock Tampering. |
+| **Timeline Explorer** | Multi-axis chronology & inspector | Sorting by Normalized UTC, Corrected UTC, or Original sequence; interactive Plotly swimlanes with coverage gap bands; 3-column forensic inspector. |
+| **Annotations & Bookmarks** | Persistent investigator notes | Pinning (`⭐`), forensic tagging (Initial Access, Lateral Movement, etc.), per-event analyst notes persisted to SQLite and Audit Ledger. |
+| **Search & Filtering** | Conjunctive faceted search | Regex keyword querying, negative search (`NOT`), CIDR subnet matching (`192.168.1.0/24`), instant filtered export bar. |
 | **Diagnostics & Gaps** | 9-category taxonomy | Quantifies quiet period gaps (Category F), parse failures (Category A), integrity mismatches (Category H). Explicit denominators. |
-| **Export Engine** | Publication-grade reports | Downloadable ReportLab PDF, complete 17-section Markdown report, RFC 4180 CSV, structured JSON. |
-| **Synthetic Suite** | 3 reproducible scenarios | Scenario 1 Clean Baseline, Scenario 2 Clock Skew (+180s), Scenario 3 Degraded Evidence; answer keys stored separately. |
+| **Export Engine** | Publication-grade reports | ReportLab PDF (XML escaped), 17+1 Section Markdown (cell escaped), RFC 4180 CSV, structured JSON. |
+| **Synthetic Suite** | 3 reproducible scenarios | Scenario 1 Clean Baseline, Scenario 2 Clock Skew (+180s), Scenario 3 Degraded Evidence; automated quantitative benchmark evaluator. |
+
 
 ---
 
@@ -95,8 +99,9 @@ Chronica runs completely offline on standard hardware without external cloud API
 Run the following command from the repository root:
 
 ```bash
-streamlit run app.py
+python -m streamlit run app.py
 ```
+
 
 Open your web browser at **`http://localhost:8501`**.
 
@@ -168,21 +173,22 @@ python -m pytest -v
 
 ### Verified Test Summary:
 ```text
-tests/end_to_end/test_scenarios_e2e.py::test_scenario_1_e2e PASSED
-tests/end_to_end/test_scenarios_e2e.py::test_scenario_2_e2e_clock_skew PASSED
-tests/end_to_end/test_scenarios_e2e.py::test_scenario_3_e2e_degraded_evidence PASSED
-tests/integration/test_investigation_lifecycle.py::test_investigation_lifecycle_isolation PASSED
-tests/integration/test_tamper_detection.py::test_tamper_detection_triggers_diagnostic_alert PASSED
-tests/unit/test_clock_skew.py (6 tests) PASSED
+tests/end_to_end/test_scenarios_e2e.py (3 tests) PASSED
+tests/integration/test_investigation_lifecycle.py (1 test) PASSED
+tests/integration/test_tamper_detection.py (1 test) PASSED
+tests/unit/test_clock_skew.py (7 tests) PASSED
 tests/unit/test_diagnostics.py (2 tests) PASSED
 tests/unit/test_exports.py (4 tests) PASSED
 tests/unit/test_hashing_and_manifest.py (8 tests) PASSED
-tests/unit/test_normalization.py (7 tests) PASSED
-tests/unit/test_parsers.py (8 tests) PASSED
+tests/unit/test_new_parsers_and_features.py (33 tests) PASSED
+tests/unit/test_normalization.py (9 tests) PASSED
+tests/unit/test_parsers.py (9 tests) PASSED
 tests/unit/test_search_and_filter.py (5 tests) PASSED
+tests/unit/test_security_and_escaping.py (22 tests) PASSED
 
-============================= 46 passed in 0.57s ==============================
+============================= 104 passed in 0.81s =============================
 ```
+
 
 ---
 

@@ -2,6 +2,7 @@
 
 Normalizes ISO 8601, RFC 3339, Apache/Nginx CLF, BSD Syslog, and epoch timestamps to UTC,
 preserving the original string and transparently tracking time-zone and year inferences.
+Also detects ambiguous DST fallback transitions and New Year rollovers in BSD Syslog streams.
 """
 
 from __future__ import annotations
@@ -9,7 +10,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Any, List, Optional, Tuple
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from src.timeline.schema import NormalizationStatus
@@ -55,6 +56,49 @@ def parse_tz_offset(offset_str: str) -> timezone:
     return timezone(sign * timedelta(hours=hours, minutes=minutes))
 
 
+def _localize_and_check_dst(
+    dt_naive: datetime,
+    src_tz: Any,
+    tz_name: str,
+    base_status: NormalizationStatus,
+    warnings: List[str],
+) -> Tuple[datetime, NormalizationStatus]:
+    """Localize a naive datetime and check for DST fold ambiguity.
+
+    Returns:
+        (utc_datetime, status) where status may be AMBIGUOUS_DST if the local time
+        falls within a DST fallback hour or spring-forward gap.
+    """
+    try:
+        dt0 = dt_naive.replace(tzinfo=src_tz, fold=0).astimezone(timezone.utc)
+        dt1 = dt_naive.replace(tzinfo=src_tz, fold=1).astimezone(timezone.utc)
+
+        if dt0 != dt1:
+            # Ambiguous DST fall-back hour
+            warnings.append(
+                "Ambiguous Daylight Saving Time (DST) fallback transition hour detected; "
+                "defaulted to first occurrence (fold=0)."
+            )
+            return dt0, NormalizationStatus.AMBIGUOUS_DST
+
+        # Check for non-existent spring-forward gap
+        # Re-localizing dt0 back to the source timezone and comparing the naive part
+        # will differ if the original naive time was skipped during DST spring-forward
+        dt0_back = dt0.astimezone(src_tz).replace(tzinfo=None)
+        if abs((dt0_back - dt_naive).total_seconds()) > 1:
+            warnings.append(
+                "Non-existent DST spring-forward transition timestamp detected."
+            )
+            return dt0, NormalizationStatus.AMBIGUOUS_DST
+
+        return dt0, base_status
+
+    except Exception:
+        # Fallback: simple localize
+        dt_loc = dt_naive.replace(tzinfo=src_tz)
+        return dt_loc.astimezone(timezone.utc), base_status
+
+
 class TimestampNormalizer:
     """Normalizes raw timestamp strings to UTC according to documented rules."""
 
@@ -65,6 +109,8 @@ class TimestampNormalizer:
     ) -> None:
         self.default_timezone = default_timezone
         self.base_year = base_year or datetime.now(timezone.utc).year
+        self.current_syslog_year: int = self.base_year
+        self.last_syslog_month: Optional[int] = None
 
     def normalize(
         self,
@@ -77,7 +123,7 @@ class TimestampNormalizer:
         Args:
             raw_ts: Original timestamp string from the log.
             configured_timezone: Investigator-specified source timezone (e.g. 'America/New_York').
-            override_year: Explicit year to use for yearless syslog timestamps.
+            override_year: Explicit year to use for yearless syslog timestamps (for rollover detection).
         """
         if not raw_ts or not raw_ts.strip():
             return NormalizedTimestampResult(
@@ -92,7 +138,7 @@ class TimestampNormalizer:
 
         ts = raw_ts.strip()
         warnings: List[str] = []
-        target_year = override_year or self.base_year
+
 
         # 1. Try Apache / Nginx CLF: "10/Oct/2026:13:55:36 -0700"
         m_clf = CLF_PATTERN.match(ts)
@@ -125,6 +171,17 @@ class TimestampNormalizer:
             if not month:
                 return self._invalid_result(ts, f"Invalid month abbreviation '{month_str}' in syslog timestamp.")
 
+            if override_year is not None:
+                target_year = override_year
+                self.current_syslog_year = override_year
+                self.last_syslog_month = month
+            else:
+                if self.last_syslog_month == 12 and month == 1:
+                    self.current_syslog_year += 1
+                    warnings.append("New Year rollover (Dec -> Jan) detected in stream; year incremented.")
+                self.last_syslog_month = month
+                target_year = self.current_syslog_year
+
             tz_name = configured_timezone or self.default_timezone
             try:
                 src_tz = ZoneInfo(tz_name)
@@ -134,18 +191,22 @@ class TimestampNormalizer:
                 tz_name = "UTC"
 
             try:
-                dt_local = datetime(
-                    target_year, month, int(day), int(hour), int(minute), int(second), tzinfo=src_tz
+                dt_naive = datetime(
+                    target_year, month, int(day), int(hour), int(minute), int(second)
                 )
-                utc_dt = dt_local.astimezone(timezone.utc)
+
             except ValueError as err:
                 return self._invalid_result(ts, f"Invalid syslog date/time: {err}")
 
-            status = (
+            base_status = (
                 NormalizationStatus.NORMALIZED_CONFIGURED_TZ
                 if configured_timezone
                 else NormalizationStatus.NORMALIZED_ASSUMED_TZ
             )
+
+            # Check DST ambiguity
+            utc_dt, status = _localize_and_check_dst(dt_naive, src_tz, tz_name, base_status, warnings)
+
             warnings.append(
                 f"Year inferred as {target_year} based on investigation baseline. "
                 f"Timezone assumed as '{tz_name}'."
@@ -216,14 +277,13 @@ class TimestampNormalizer:
                     warnings.append(f"Timezone '{tz_name}' not found; defaulted to UTC.")
                     tz_name = "UTC"
 
-                dt_localized = dt.replace(tzinfo=src_tz)
-                utc_dt = dt_localized.astimezone(timezone.utc)
-
-                status = (
+                base_status = (
                     NormalizationStatus.NORMALIZED_CONFIGURED_TZ
                     if configured_timezone
                     else NormalizationStatus.NORMALIZED_ASSUMED_TZ
                 )
+
+                utc_dt, status = _localize_and_check_dst(dt, src_tz, tz_name, base_status, warnings)
                 warnings.append(f"Naive ISO timestamp: source timezone assumed as '{tz_name}'.")
 
                 return NormalizedTimestampResult(
@@ -257,13 +317,13 @@ class TimestampNormalizer:
                     src_tz = timezone.utc
                     tz_name = "UTC"
 
-                dt_localized = dt.replace(tzinfo=src_tz)
-                utc_dt = dt_localized.astimezone(timezone.utc)
-                status = (
+                base_status = (
                     NormalizationStatus.NORMALIZED_CONFIGURED_TZ
                     if configured_timezone
                     else NormalizationStatus.NORMALIZED_ASSUMED_TZ
                 )
+
+                utc_dt, status = _localize_and_check_dst(dt, src_tz, tz_name, base_status, warnings)
                 warnings.append(f"Format parsed as '{fmt}'. Assumed timezone '{tz_name}'.")
 
                 return NormalizedTimestampResult(

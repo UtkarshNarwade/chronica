@@ -75,3 +75,27 @@ def test_invalid_and_missing_timestamps():
     res_invalid = normalizer.normalize("2026-99-99T99:99:99Z")
     assert res_invalid.status == NormalizationStatus.INVALID_TIMESTAMP
     assert res_invalid.normalized_utc_iso is None
+
+
+def test_ambiguous_dst_fallback_hour():
+    normalizer = TimestampNormalizer()
+    # In America/New_York, 2026-11-01 01:30:00 occurs twice due to DST fall-back
+    res = normalizer.normalize("2026-11-01T01:30:00", configured_timezone="America/New_York")
+    assert res.status == NormalizationStatus.AMBIGUOUS_DST
+    assert res.normalized_utc_iso is not None
+    assert any("Ambiguous Daylight Saving Time" in w for w in res.warnings)
+
+
+def test_bsd_syslog_year_rollover():
+    normalizer = TimestampNormalizer(base_year=2025)
+    # Event 1: Dec 31 23:59:50 -> year 2025
+    res1 = normalizer.normalize("Dec 31 23:59:50", configured_timezone="UTC")
+    assert res1.normalized_utc_iso.startswith("2025-12-31")
+    assert res1.year_inferred is True
+
+    # Event 2: Jan 01 00:00:10 -> should rollover to 2026
+    res2 = normalizer.normalize("Jan 01 00:00:10", configured_timezone="UTC")
+    assert res2.normalized_utc_iso.startswith("2026-01-01")
+    assert res2.year_inferred is True
+    assert any("Rollover" in w or "rollover" in w for w in res2.warnings)
+

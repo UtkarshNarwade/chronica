@@ -2,6 +2,7 @@
 
 Produces detailed forensic reports conforming to the 17 required reporting sections,
 distinguishing recorded facts, inferences, timing estimates, and uncertainties.
+All dynamic values interpolated into table rows are escaped to prevent Markdown table breakage.
 """
 
 from __future__ import annotations
@@ -18,6 +19,18 @@ from src.timeline.schema import Event
 from src.timeline.search import FilterCriteria
 
 
+def _md_cell(val: Any) -> str:
+    """Escape a value for safe use inside a Markdown table cell.
+
+    Converts to string, collapses newlines/carriage returns to a space,
+    and escapes pipe characters to prevent table column breakage.
+    """
+    s = str(val if val is not None else "")
+    s = s.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
+    s = s.replace("|", r"\|")
+    return s
+
+
 def export_markdown_report(
     metadata: InvestigationMetadata,
     manifest: EvidenceManifest,
@@ -29,12 +42,22 @@ def export_markdown_report(
     integrity_summary: Optional[InvestigationIntegritySummary] = None,
     filter_criteria: Optional[FilterCriteria] = None,
     evaluation_summary: Optional[Dict[str, Any]] = None,
+    audit_entries: Optional[List[Any]] = None,
 ) -> str:
-    """Generate a 17-section incident report in GitHub Flavored Markdown."""
+    # Defensive handling if arguments were passed positionally in alternate order
+    if isinstance(diagnostics, dict) and (skew_estimates is None or isinstance(skew_estimates, list)):
+        diagnostics, skew_estimates = skew_estimates or [], diagnostics
+    elif isinstance(coverage_stats, dict) and isinstance(skew_estimates, ParsingCoverageStats):
+        coverage_stats, skew_estimates = skew_estimates, coverage_stats
+
+    if isinstance(skew_estimates, list):
+        skew_estimates = {getattr(e, "target_source", f"src_{i}"): e for i, e in enumerate(skew_estimates) if hasattr(e, "target_source") or hasattr(e, "status")}
+
     now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     is_filtered = filter_criteria and not filter_criteria.is_empty()
 
     md = []
+
     md.append(f"# Digital Forensics Incident Investigation Report")
     md.append(f"**Chronica Forensic System — PS-013 Incident Timeline & Evidence Collection**\n")
     md.append(f"---\n")
@@ -65,7 +88,11 @@ def export_markdown_report(
         md.append("| Evidence ID | Original Filename | Stored Filename | Size (Bytes) | Ingested At (UTC) | Detected Format |")
         md.append("|---|---|---|---|---|---|")
         for ent in manifest.entries:
-            md.append(f"| `{ent.evidence_id}` | `{ent.original_filename}` | `{ent.stored_filename}` | {ent.file_size_bytes:,} | {ent.collection_time_utc} | `{ent.detected_format or 'Unknown'}` |")
+            md.append(
+                f"| `{_md_cell(ent.evidence_id)}` | `{_md_cell(ent.original_filename)}` "
+                f"| `{_md_cell(ent.stored_filename)}` | {ent.file_size_bytes:,} "
+                f"| {_md_cell(ent.collection_time_utc)} | `{_md_cell(ent.detected_format or 'Unknown')}` |"
+            )
     else:
         md.append("_No evidence files recorded in this investigation._")
     md.append("")
@@ -77,7 +104,10 @@ def export_markdown_report(
         md.append("| Evidence ID | Original Filename | SHA-256 Digest | Status |")
         md.append("|---|---|---|---|")
         for ent in manifest.entries:
-            md.append(f"| `{ent.evidence_id}` | `{ent.original_filename}` | `{ent.sha256_digest}` | `{ent.ingestion_status}` |")
+            md.append(
+                f"| `{_md_cell(ent.evidence_id)}` | `{_md_cell(ent.original_filename)}` "
+                f"| `{_md_cell(ent.sha256_digest)}` | `{_md_cell(ent.ingestion_status)}` |"
+            )
         md.append(f"\n- **Manifest Composite SHA-256:** `{manifest.calculate_manifest_digest()}`")
     else:
         md.append("_Manifest is currently empty._")
@@ -96,8 +126,11 @@ def export_markdown_report(
         md.append("|---|---|---|---|---|")
         for res in integrity_summary.results:
             status_badge = "✅ VERIFIED" if res.status == "VERIFIED" else ("❌ MISMATCH" if res.status == "MISMATCH" else "❓ UNAVAILABLE")
-            calc_hash = f"`{res.calculated_sha256}`" if res.calculated_sha256 else "N/A"
-            md.append(f"| `{res.original_filename}` | **{status_badge}** | {calc_hash} | `{res.recorded_sha256}` | {res.details} |")
+            calc_hash = f"`{_md_cell(res.calculated_sha256)}`" if res.calculated_sha256 else "N/A"
+            md.append(
+                f"| `{_md_cell(res.original_filename)}` | **{status_badge}** "
+                f"| {calc_hash} | `{_md_cell(res.recorded_sha256)}` | {_md_cell(res.details)} |"
+            )
     else:
         md.append("_No verification audit has been recorded yet._")
     md.append("")
@@ -129,7 +162,10 @@ def export_markdown_report(
             offset_str = f"{est.estimated_offset_sec:+.3f}s" if est.estimated_offset_sec is not None else "N/A"
             mad_str = f"±{est.spread_mad_sec:.3f}s" if est.spread_mad_sec is not None else "N/A"
             range_str = f"[{est.min_offset_sec:.2f}s, {est.max_offset_sec:.2f}s]" if est.min_offset_sec is not None else "N/A"
-            md.append(f"| `{host}` | `{est.reference_source}` | {est.anchor_count} | **{offset_str}** | {mad_str} | {range_str} | `{est.status}` |")
+            md.append(
+                f"| `{_md_cell(host)}` | `{_md_cell(est.reference_source)}` | {est.anchor_count} "
+                f"| **{_md_cell(offset_str)}** | {_md_cell(mad_str)} | {_md_cell(range_str)} | `{_md_cell(est.status)}` |"
+            )
     else:
         md.append("_No clock-skew estimates calculated._")
     md.append("")
@@ -141,7 +177,12 @@ def export_markdown_report(
         md.append("|---|---|---|---|---|---|---|")
         for a in anchors[:20]:  # Show first 20 anchors
             conf = "Confirmed" if a.is_confirmed else "Unconfirmed"
-            md.append(f"| `{a.anchor_id}` | `{a.anchor_type}` | `{a.anchor_key}` | `{a.target_source}` (`{a.target_utc_iso}`) | `{a.reference_source}` (`{a.reference_utc_iso}`) | {a.raw_offset_sec:+.3f}s | {conf} |")
+            md.append(
+                f"| `{_md_cell(a.anchor_id)}` | `{_md_cell(a.anchor_type)}` | `{_md_cell(a.anchor_key)}` "
+                f"| `{_md_cell(a.target_source)}` (`{_md_cell(a.target_utc_iso)}`) "
+                f"| `{_md_cell(a.reference_source)}` (`{_md_cell(a.reference_utc_iso)}`) "
+                f"| {a.raw_offset_sec:+.3f}s | {conf} |"
+            )
         if len(anchors) > 20:
             md.append(f"\n_... and {len(anchors) - 20} additional anchor pairs recorded in system database._")
     else:
@@ -159,7 +200,12 @@ def export_markdown_report(
             norm_ts = ev.normalized_utc_iso or "UNRESOLVED"
             corr_ts = ev.corrected_utc_iso or "-"
             prov = f"`{ev.original_filename}:L{ev.line_number}`"
-            md.append(f"| `{norm_ts}` | `{corr_ts}` | `{ev.source_host or ev.source_app}` | `{ev.severity}` | `{ev.category}` | {actor} | {ev.description} | {prov} |")
+            md.append(
+                f"| `{_md_cell(norm_ts)}` | `{_md_cell(corr_ts)}` "
+                f"| `{_md_cell(ev.source_host or ev.source_app)}` | `{_md_cell(ev.severity)}` "
+                f"| `{_md_cell(ev.category)}` | {_md_cell(actor)} "
+                f"| {_md_cell(ev.description)} | {prov} |"
+            )
         if len(events) > 50:
             md.append(f"\n_... {len(events) - 50} additional timeline records omitted from Markdown preview. Refer to CSV export for complete table._")
     else:
@@ -186,7 +232,11 @@ def export_markdown_report(
         md.append("| Diagnostic ID | Severity | Category | Target | Explanation | Suggested Action |")
         md.append("|---|---|---|---|---|---|")
         for d in diagnostics[:25]:
-            md.append(f"| `{d.diag_id}` | `{d.severity.value}` | `{d.category.value}` | `{d.affected_target}` | {d.explanation} | {d.suggested_action} |")
+            md.append(
+                f"| `{_md_cell(d.diag_id)}` | `{_md_cell(d.severity.value)}` "
+                f"| `{_md_cell(d.category.value)}` | `{_md_cell(d.affected_target)}` "
+                f"| {_md_cell(d.explanation)} | {_md_cell(d.suggested_action)} |"
+            )
         if len(diagnostics) > 25:
             md.append(f"\n_... and {len(diagnostics) - 25} additional diagnostic findings._")
     else:
@@ -220,5 +270,37 @@ def export_markdown_report(
     # 17. Formal Forensic Disclaimer
     md.append(f"## 17. Forensic Disclaimer & Admissibility Notice")
     md.append("> **IMPORTANT NOTICE:** Findings in this report are based strictly and exclusively on the digital evidence files provided to Chronica. This application is an engineering prototype designed for small IT teams and laboratory research. Cryptographic hashes certify that evidence files match their collected state. Clock corrections represent defensible statistical estimations derived from documented anchors and must be corroborated by physical device analysis in formal judicial proceedings.\n")
+
+    # 18. Pinned Key Evidence & Chain-of-Custody Audit Trail
+    bookmarked_events = [ev for ev in events if ev.extra_fields.get("bookmarked")]
+    md.append(f"## 18. Pinned Key Evidence & Chain-of-Custody Audit Trail")
+    if audit_entries and len(audit_entries) > 0:
+        md.append(f"**Audit Ledger Entries: {len(audit_entries)}**\n")
+        md.append("| Seq | Timestamp (UTC) | Action | Actor | Summary |")
+        md.append("|---|---|---|---|---|")
+        for entry in audit_entries[:30]:
+            md.append(
+                f"| {_md_cell(entry.seq_id)} | `{_md_cell(entry.timestamp_utc[:19])}` "
+                f"| `{_md_cell(entry.action)}` | {_md_cell(entry.actor)} "
+                f"| {_md_cell(entry.summary)} |"
+            )
+        if len(audit_entries) > 30:
+            md.append(f"\n_... and {len(audit_entries) - 30} additional audit entries._")
+        md.append("")
+    if bookmarked_events:
+        md.append(f"**Bookmarked / Pinned Evidence Events: {len(bookmarked_events)}**\n")
+        md.append("| Event ID | Normalized UTC | Source | Severity | Description | Tags | Analyst Note |")
+        md.append("|---|---|---|---|---|---|---|")
+        for ev in bookmarked_events[:20]:
+            tags = ", ".join(ev.extra_fields.get("tags", []))
+            note = ev.extra_fields.get("analyst_note", "")
+            md.append(
+                f"| `{_md_cell(ev.event_id[:12])}` | `{_md_cell(ev.normalized_utc_iso or 'N/A')}` "
+                f"| `{_md_cell(ev.source_host or ev.original_filename)}` | `{_md_cell(ev.severity)}` "
+                f"| {_md_cell(ev.description[:80])} | {_md_cell(tags)} | {_md_cell(note[:100])} |"
+            )
+        md.append("")
+    if not (audit_entries and len(audit_entries) > 0) and not bookmarked_events:
+        md.append("_No pinned evidence bookmarks or audit ledger entries recorded._\n")
 
     return "\n".join(md)

@@ -5,10 +5,10 @@ from __future__ import annotations
 import math
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from src.diagnostics.gap_analysis import ParsingCoverageStats
-from src.evaluation.ground_truth import ScenarioGroundTruth
+from src.evaluation.ground_truth import GroundTruthEvent, ScenarioGroundTruth
 from src.timeline.clock_skew import ClockSkewEstimate
 from src.timeline.schema import Event
 
@@ -67,45 +67,92 @@ class BenchmarkEvaluator:
     """Evaluates Chronica's output against scenario ground truth."""
 
     @staticmethod
+    def _matches_ground_truth(ev: Event, gt: GroundTruthEvent) -> bool:
+        """Check if a reconstructed event matches a ground-truth event.
+
+        Performs tri-part matching:
+        1. Source identifier match (source_host, original_filename, or source_app)
+        2. Raw text pattern match
+        3. Request ID match (if specified in ground truth)
+
+        Returns True only if ALL applicable conditions are satisfied.
+        """
+        # Check source match
+        ev_sources = {s for s in (ev.source_host, ev.original_filename, ev.source_app) if s}
+        source_matches = (
+            gt.source_identifier in ev_sources
+            or (gt.expected_raw_pattern in ev.raw_text and ev.source_host is None)
+        )
+        if not source_matches:
+            return False
+
+        # Check raw text pattern match
+        if gt.expected_raw_pattern not in ev.raw_text:
+            return False
+
+        # Check request_id match (if specified in ground truth)
+        if gt.expected_request_id is not None:
+            if ev.request_id != gt.expected_request_id:
+                return False
+
+        return True
+
+    @staticmethod
     def evaluate_clock_skew(
         ground_truth: ScenarioGroundTruth,
         skew_estimates: Dict[str, ClockSkewEstimate],
         events: List[Event],
+        filename_to_host: Optional[Dict[str, str]] = None,
     ) -> Dict[str, SkewEvaluationMetric]:
-        """Compute clock-skew offset estimation errors and pre/post correction timing residuals."""
+        """Compute clock-skew offset estimation errors and pre/post correction timing residuals.
+
+        Uses _matches_ground_truth() for 1-to-1 event matching (each reconstructed event
+        can be paired with at most one ground-truth event).
+        """
         results: Dict[str, SkewEvaluationMetric] = {}
+        if filename_to_host is None:
+            filename_to_host = {}
 
         for host, true_offset in ground_truth.known_clock_offsets_sec.items():
-            est = skew_estimates.get(host)
+            # Resolve host via filename_to_host mapping if needed
+            resolved_host = filename_to_host.get(host, host)
+            est = skew_estimates.get(resolved_host) or skew_estimates.get(host)
             est_offset = est.estimated_offset_sec if est and est.status == "ESTIMATED" else None
             abs_err = round(abs(est_offset - true_offset), 4) if est_offset is not None else None
             status = est.status if est else "NOT_ANALYZED"
 
             # Calculate pre- and post-correction timing error for events from this host
-            host_events = [e for e in events if (e.source_host or e.original_filename) == host and e.normalized_utc_iso]
-            
-            # Map events to ground truth
+            host_events = [
+                e for e in events
+                if (e.source_host or e.original_filename) in (host, resolved_host)
+                and e.normalized_utc_iso
+            ]
+
+            # Map events to ground truth using strict 1-to-1 matching
             pre_errors: List[float] = []
             post_errors: List[float] = []
+            matched_event_ids: Set[str] = set()
 
-            for ev in host_events:
-                # Find matching ground truth event by request_id or raw text snippet
-                matching_gt = None
-                for gt in ground_truth.expected_events:
-                    if ev.request_id and gt.expected_request_id and ev.request_id == gt.expected_request_id:
-                        matching_gt = gt
-                        break
-                    elif gt.expected_raw_pattern in ev.raw_text:
-                        matching_gt = gt
+            for gt in ground_truth.expected_events:
+                if gt.source_identifier not in (host, resolved_host):
+                    continue
+
+                matched_ev = None
+                for ev in host_events:
+                    if ev.event_id in matched_event_ids:
+                        continue  # Already paired
+                    if BenchmarkEvaluator._matches_ground_truth(ev, gt):
+                        matched_ev = ev
                         break
 
-                if matching_gt and matching_gt.true_utc_iso:
-                    true_dt = datetime.fromisoformat(matching_gt.true_utc_iso.replace("Z", "+00:00")).timestamp()
-                    norm_dt = datetime.fromisoformat(ev.normalized_utc_iso.replace("Z", "+00:00")).timestamp()
+                if matched_ev and gt.true_utc_iso:
+                    matched_event_ids.add(matched_ev.event_id)
+                    true_dt = datetime.fromisoformat(gt.true_utc_iso.replace("Z", "+00:00")).timestamp()
+                    norm_dt = datetime.fromisoformat(matched_ev.normalized_utc_iso.replace("Z", "+00:00")).timestamp()
                     pre_errors.append(abs(norm_dt - true_dt))
 
-                    if ev.corrected_utc_iso:
-                        corr_dt = datetime.fromisoformat(ev.corrected_utc_iso.replace("Z", "+00:00")).timestamp()
+                    if matched_ev.corrected_utc_iso:
+                        corr_dt = datetime.fromisoformat(matched_ev.corrected_utc_iso.replace("Z", "+00:00")).timestamp()
                         post_errors.append(abs(corr_dt - true_dt))
 
             pre_mean = round(sum(pre_errors) / len(pre_errors), 3) if pre_errors else None
@@ -129,10 +176,16 @@ class BenchmarkEvaluator:
         ground_truth: ScenarioGroundTruth,
         use_corrected_timestamps: bool = False,
     ) -> OrderingEvaluationMetric:
-        """Calculate pairwise concordance and Kendall's tau against ground-truth order."""
+        """Calculate pairwise concordance and Kendall's tau against ground-truth order.
+
+        Uses strict 1-to-1 matching via _matches_ground_truth() to prevent the same
+        reconstructed event being paired with multiple ground-truth entries (fixes the
+        shared-request-ID gateway/backend ambiguity).
+        """
         # Align reconstructed events with ground truth expected events
         aligned_pairs: List[Tuple[int, float]] = []  # (gt_expected_order, reconstructed_timestamp_epoch)
         excluded_count = 0
+        matched_event_ids: Set[str] = set()
 
         for gt_ev in ground_truth.expected_events:
             # Exclude deliberate anomalies that lack a valid ground truth timestamp
@@ -142,14 +195,14 @@ class BenchmarkEvaluator:
 
             matched_ev = None
             for rev in reconstructed_events:
-                if rev.request_id and gt_ev.expected_request_id and rev.request_id == gt_ev.expected_request_id:
-                    matched_ev = rev
-                    break
-                elif gt_ev.expected_raw_pattern in rev.raw_text:
+                if rev.event_id in matched_event_ids:
+                    continue  # Already paired
+                if BenchmarkEvaluator._matches_ground_truth(rev, gt_ev):
                     matched_ev = rev
                     break
 
             if matched_ev:
+                matched_event_ids.add(matched_ev.event_id)
                 ts_str = (
                     matched_ev.corrected_utc_iso if use_corrected_timestamps else matched_ev.normalized_utc_iso
                 ) or matched_ev.normalized_utc_iso

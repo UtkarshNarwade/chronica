@@ -62,6 +62,11 @@ class Event:
     provenance: Dict[str, Any] = field(default_factory=dict)
     extra_fields: Dict[str, Any] = field(default_factory=dict)
 
+    @property
+    def actor(self) -> Optional[str]:
+        return self.username
+
+
     @classmethod
     def create(
         cls,
@@ -95,4 +100,8 @@ class Event:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> Event:
-        return cls(**data)
+        import dataclasses
+        known_fields = {f.name for f in dataclasses.fields(cls)}
+        filtered = {k: v for k, v in data.items() if k in known_fields}
+        return cls(**filtered)
+

@@ -34,12 +34,25 @@ class EvidenceFileEntry:
     assigned_timezone: Optional[str] = None  # e.g., 'UTC', 'America/New_York'
     notes: str = ""
 
+    @property
+    def collection_timestamp_utc(self) -> str:
+        return self.collection_time_utc
+
+    @property
+    def stored_relpath(self) -> str:
+        return self.stored_filename
+
     def to_dict(self) -> Dict[str, Any]:
+
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> EvidenceFileEntry:
-        return cls(**data)
+        import dataclasses
+        known_fields = {f.name for f in dataclasses.fields(cls)}
+        filtered = {k: v for k, v in data.items() if k in known_fields}
+        return cls(**filtered)
+
 
 
 @dataclass

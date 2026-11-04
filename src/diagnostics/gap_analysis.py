@@ -48,12 +48,18 @@ class DiagnosticItem:
     timestamp_utc: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def message(self) -> str:
+        return self.explanation
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
         d["category"] = self.category.value
         d["severity"] = self.severity.value
         return d
+
 
 
 @dataclass
@@ -372,8 +378,10 @@ class EvidenceGapAnalyzer:
                                 "it may represent normal system quiescence, scheduled maintenance, or log rotation."
                             ),
                             suggested_action="Correlate with system uptime or service availability logs during this interval.",
+                            metadata={"gap_start_utc": t1.isoformat(), "gap_end_utc": t2.isoformat()},
                         )
                     )
                     diag_idx += 1
+
 
         return diagnostics

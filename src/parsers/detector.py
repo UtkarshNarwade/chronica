@@ -11,10 +11,13 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Type
 
 from src.parsers.base import BaseParser
+from src.parsers.auditd_parser import AuditdParser
 from src.parsers.csv_firewall_parser import CsvFirewallParser
+from src.parsers.custom_regex_parser import CustomRegexParser
 from src.parsers.jsonl_parser import JsonlParser
 from src.parsers.syslog_parser import SyslogParser
 from src.parsers.web_access_parser import WebAccessParser
+from src.parsers.windows_event_parser import WindowsEventParser
 
 CONFIDENCE_THRESHOLD = 0.50  # Must be >= 0.5 to autodetect without investigator prompt
 
@@ -39,11 +42,18 @@ class ParserRegistry:
             "jsonl": JsonlParser(),
             "web_access": WebAccessParser(),
             "csv_firewall": CsvFirewallParser(),
+            "auditd": AuditdParser(),
+            "windows_event": WindowsEventParser(),
+            "custom_regex": CustomRegexParser(),  # Never auto-selected (score=0.0)
         }
 
     def get_parser(self, format_name: str) -> Optional[BaseParser]:
         """Retrieve parser instance by its registered key."""
         return self._parsers.get(format_name.lower())
+
+    def register_parser(self, format_name: str, parser: BaseParser) -> None:
+        """Register a new parser instance."""
+        self._parsers[format_name.lower()] = parser
 
     def list_formats(self) -> Dict[str, str]:
         """List registered formats and descriptions."""
@@ -57,6 +67,8 @@ class ParserRegistry:
             
         Returns:
             DetectionResult detailing the highest-scoring parser and confidence.
+
+        Note: custom_regex always scores 0.0 and is excluded from autodetection.
         """
         # Filter non-empty lines
         non_empty = [ln.strip() for ln in sample_lines if ln.strip()]
@@ -73,13 +85,19 @@ class ParserRegistry:
         scores: Dict[str, float] = {}
         explanations: Dict[str, str] = {}
 
+        # Exclude custom_regex from autodetection (always 0.0)
         for name, parser in self._parsers.items():
+            if name == "custom_regex":
+                scores[name] = 0.0
+                explanations[name] = "custom_regex is never auto-detected."
+                continue
             score, expl = parser.score_confidence(non_empty)
             scores[name] = score
             explanations[name] = expl
 
-        # Find candidate with highest score
-        best_format, best_score = max(scores.items(), key=lambda item: item[1])
+        # Find candidate with highest score (excluding custom_regex)
+        autodetect_scores = {k: v for k, v in scores.items() if k != "custom_regex"}
+        best_format, best_score = max(autodetect_scores.items(), key=lambda item: item[1])
 
         if best_score >= CONFIDENCE_THRESHOLD:
             return DetectionResult(
@@ -97,7 +115,7 @@ class ParserRegistry:
                 explanation=(
                     f"Autodetection inconclusive. Highest candidate was '{best_format}' "
                     f"with confidence {best_score:.2f} (below required threshold {CONFIDENCE_THRESHOLD:.2f}). "
-                    f"Evaluations: {'; '.join(f'{k}: {v:.2f}' for k, v in scores.items())}"
+                    f"Evaluations: {'; '.join(f'{k}: {v:.2f}' for k, v in autodetect_scores.items())}"
                 ),
                 is_confident=False,
                 candidate_scores=scores,

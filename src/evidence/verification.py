@@ -45,6 +45,10 @@ class VerificationResult:
     def is_intact(self) -> bool:
         return self.status == IntegrityStatus.VERIFIED
 
+    @property
+    def verified_at_utc(self) -> str:
+        return self.verification_time_utc
+
 
 @dataclass
 class InvestigationIntegritySummary:
