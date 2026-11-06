@@ -1055,7 +1055,7 @@ if nav_section == "Security Overview":
             host_counts = pd.Series([e.source_host or e.original_filename for e in events]).value_counts().head(4)
             host_items = "".join(
                 f"<div style='display: flex; justify-content: space-between; padding: 3px 0; border-bottom: 1px solid #F1F5F9; font-size: 11px;'>"
-                f"<code>{h}</code><span class='ch-pill-slate'>{c} events</span></div>"
+                f"<code>{html_lib.escape(str(h))}</code><span class='ch-pill-slate'>{c} events</span></div>"
                 for h, c in host_counts.items()
             )
             st.markdown(f"<div style='margin-bottom: 8px;'>{host_items}</div>", unsafe_allow_html=True)
@@ -1171,7 +1171,7 @@ elif nav_section == "Event Discovery & Timeline":
                     f"""
                     <div style="margin-bottom: 4px;">
                         <div style="font-size: 11px; display: flex; justify-content: space-between;">
-                            <code>{h[:14]}</code><span>{c} ({pct}%)</span>
+                            <code>{html_lib.escape(str(h[:14]))}</code><span>{c} ({pct}%)</span>
                         </div>
                         <div style="background: #E2E8F0; border-radius: 2px; height: 3px; width: 100%;">
                             <div style="background: #0066CC; border-radius: 2px; height: 3px; width: {pct}%;"></div>
@@ -1368,7 +1368,7 @@ elif nav_section == "Event Discovery & Timeline":
                     st.markdown(
                         f"""
                         <div style="font-size: 12px; color: #475569; line-height: 1.6;">
-                            <div>Evidence File: <code>{selected_event.original_filename}</code></div>
+                            <div>Evidence File: <code>{html_lib.escape(str(selected_event.original_filename))}</code></div>
                             <div>Line Offset: <code>Line {selected_event.line_number}</code></div>
                             <div>Artifact ID: <code>{selected_event.evidence_id}</code></div>
                             <div>SHA-256 Digest: <code>{selected_event.provenance.get('sha256', 'N/A')}</code></div>
@@ -1451,7 +1451,7 @@ elif nav_section == "Threat Hunting & Topology":
         is_regex = st.checkbox("Regex Mode", value=False, key="th_regex_check")
     with search_col3:
         exclude_kw = st.text_input("NOT (Exclude Term)", value="", placeholder="e.g. cron", key="th_exclude_input")
-    st.caption("CQL Syntax: `host:web-01` `user:admin` `ip:10.0.0.1` `severity:CRITICAL` `req:req-1234` `session:sess-1` `file:auth.log` `status:CORRECTED` `NOT term`")
+    st.caption("CQL Syntax: `host:web-01,db-02` `user:admin` `ip:10.0.0.1` `severity:CRITICAL,AUTH_FAIL` `req:req-1234` `after:2026-10-12T10:00:00Z` `before:2026-10-12T12:00:00Z` `NOT term`")
 
     f_c1, f_c2, f_c3, f_c4, f_c5 = st.columns(5)
     with f_c1:
@@ -2272,7 +2272,7 @@ elif nav_section == "Forensic Reports & Export":
 
         export_cache_key = (
             active_inv.investigation_id,
-            getattr(active_inv, "updated_at_utc", ""),
+            getattr(active_inv, "last_updated_utc", ""),
             export_scope,
             len(export_events),
             len(chain_entries),
@@ -2589,7 +2589,7 @@ elif nav_section == "Workspace & System Specs":
 
     with mg_c2:
         st.markdown("<strong>Manage Existing Workspaces</strong>", unsafe_allow_html=True)
-        st.markdown(f"Current Active: <strong>{active_inv.title}</strong> [<code>{active_inv.investigation_id}</code>]", unsafe_allow_html=True)
+        st.markdown(f"Current Active: <strong>{html_lib.escape(str(active_inv.title))}</strong> [<code>{html_lib.escape(str(active_inv.investigation_id))}</code>]", unsafe_allow_html=True)
         if st.button("Delete Active Investigation", key="delete_case_btn"):
             del_id = active_inv.investigation_id
             repo.delete_investigation(del_id)

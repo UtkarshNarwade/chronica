@@ -71,6 +71,15 @@ python -m pytest tests/end_to_end -v
 | `test_scenarios_e2e.py` | `test_scenario_1_e2e` | End-to-end ingestion and reporting on Scenario 1. |
 | `test_scenarios_e2e.py` | `test_scenario_2_e2e_clock_skew` | End-to-end estimation of +180s offset on Scenario 2. |
 | `test_scenarios_e2e.py` | `test_scenario_3_e2e_degraded_evidence` | End-to-end handling of corrupted/truncated Scenario 3. |
+| `test_ui_app.py` | `test_headless_ui_all_modules_zero_errors` | Headless AppTest execution across all 11 modules with zero exceptions. |
+| `test_ui_app.py` | `test_headless_ui_interactive_actions_zero_errors` | Interactive AppTest button and scenario load triggers with zero exceptions. |
+| `test_new_parsers_and_features.py` | `TestAuditdParser` | Verifies Linux auditd parsing, syscall translation, and hex decoding. |
+| `test_new_parsers_and_features.py` | `TestWindowsEventParser` | Ingests Windows Event Logs (CSV/JSON) with 4624/4625/1102 security events. |
+| `test_new_parsers_and_features.py` | `TestAuditChainLedger` | Tests cryptographic forward-integrity audit chain hashing and tamper detection. |
+| `test_new_parsers_and_features.py` | `TestCustomRegexParser` | Tests named-group regex extraction, live preview testing, and confidence scoring. |
+| `test_new_parsers_and_features.py` | `TestTransitiveTwoHopClockSkew` | Tests 2-hop transitive clock-skew propagation ($A \leftrightarrow B \leftrightarrow C$) and MAD hypot. |
+| `test_new_parsers_and_features.py` | `TestCQLCommaOrAndTimeBounds` | Validates CQL comma-separated OR lists and after:/before: time window bounds. |
+| `test_security_and_escaping.py` | `TestXmlEscape` & `TestMarkdownCellEscape` | Tests defense against XML/SSRF injection in PDF and Markdown pipe-breakouts. |
 
 ---
 
@@ -79,18 +88,21 @@ python -m pytest tests/end_to_end -v
 ```text
 ============================= test session starts =============================
 platform win32 -- Python 3.14.3, pytest-9.1.1, pluggy-1.6.0
-collected 46 items
+collected 127 items
 
-tests/end_to_end/test_scenarios_e2e.py ... [  6%]
-tests/integration/test_investigation_lifecycle.py . [  8%]
-tests/integration/test_tamper_detection.py . [ 10%]
-tests/unit/test_clock_skew.py ...... [ 23%]
-tests/unit/test_diagnostics.py .. [ 28%]
-tests/unit/test_exports.py .... [ 36%]
-tests/unit/test_hashing_and_manifest.py ........ [ 54%]
-tests/unit/test_normalization.py ....... [ 69%]
-tests/unit/test_parsers.py ........ [ 89%]
-tests/unit/test_search_and_filter.py ..... [100%]
+tests/end_to_end/test_scenarios_e2e.py ... [  2%]
+tests/end_to_end/test_ui_app.py .. [  3%]
+tests/integration/test_investigation_lifecycle.py . [  4%]
+tests/integration/test_tamper_detection.py . [  5%]
+tests/unit/test_clock_skew.py ....... [ 11%]
+tests/unit/test_diagnostics.py .. [ 12%]
+tests/unit/test_exports.py .... [ 15%]
+tests/unit/test_hashing_and_manifest.py ........ [ 22%]
+tests/unit/test_new_parsers_and_features.py ...................................................... [ 64%]
+tests/unit/test_normalization.py ......... [ 71%]
+tests/unit/test_parsers.py ........ [ 78%]
+tests/unit/test_search_and_filter.py ..... [ 82%]
+tests/unit/test_security_and_escaping.py ....................... [100%]
 
-============================= 46 passed in 0.57s ==============================
+============================= 127 passed in 7.31s =============================
 ```

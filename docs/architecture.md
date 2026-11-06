@@ -19,21 +19,22 @@ Chronica is an offline-first digital forensics timeline reconstruction and evide
 ```mermaid
 flowchart TD
     subgraph Evidence Ingestion & Preservation
-        RawLogs["Raw Log Files (Syslog, JSONL, Web Access, CSV)"] --> PreHash["Calculate Pre-Ingestion SHA-256"]
+        RawLogs["Raw Log Files (Syslog, JSONL, Web Access, CSV, auditd, Windows Events, Custom Regex)"] --> PreHash["Calculate Pre-Ingestion SHA-256"]
         PreHash --> Storage["Preserve Raw Bytes in Evidence Store (Read-Only)"]
         PreHash --> Manifest["Generate/Update JSON Manifest"]
+        PreHash --> Ledger["Append-Only Audit Chain Ledger (audit_chain.jsonl)"]
     end
 
     subgraph Parsing & Normalization
         Storage --> Detector["Explainable Format Detector"]
-        Detector --> Parsers["Format Parsers (Syslog, JSONL, Apache/Nginx, CSV)"]
+        Detector --> Parsers["7 Format Parsers (Syslog, JSONL, Apache/Nginx, CSV, auditd, Windows Events, Custom Regex)"]
         Parsers --> Normalizer["Timestamp Parser & UTC Normalizer"]
         Normalizer --> SQLiteDB[("SQLite Event Database (Parameterized)")]
     end
 
     subgraph Correlation & Clock-Skew Engine
         SQLiteDB --> AnchorFinder["Anchor Discovery (Shared Request/Session IDs)"]
-        AnchorFinder --> SkewEstimator["Robust Median & MAD Offset Estimator"]
+        AnchorFinder --> SkewEstimator["Robust Median & MAD Offset Estimator (Direct & 2-Hop Transitive)"]
         SkewEstimator --> CorrectionPolicy{"Configured Policy (Anchors >= Min & Spread <= Max)"}
         CorrectionPolicy -- Supported --> Adjuster["Apply Offset (target - offset)"]
         CorrectionPolicy -- Inconclusive --> Uncorrected["Mark INCONCLUSIVE & Preserve UTC"]
@@ -63,12 +64,16 @@ flowchart TD
 - **`collector.py`**: Sanitizes input filenames against directory traversal (`../`, null bytes, illegal shell characters), enforces configurable file limits (100 MB), and applies read-only attributes.
 - **`manifest.py`**: Maintains `manifest.json` tracking evidence IDs, filenames, sizes, collection timestamps, and composite digest.
 - **`verification.py`**: Re-reads and re-hashes on-disk files, comparing them against the manifest to immediately flag `VERIFIED`, `MISMATCH`, or `UNAVAILABLE`.
+- **`audit_chain.py`**: Implements `AuditChainLedger`, maintaining an append-only, cryptographically linked SHA-256 block ledger (`audit_chain.jsonl`) tracking ingestion, verification, analyst annotations, and exports with forward-integrity validation.
 
 ### 3.2 Parser Engine (`src/parsers/`)
 - **`syslog_parser.py`**: Parses RFC 3164 BSD and RFC 5424 syslog, extracting SSH accepted/failed logins, invalid users, and sudo privilege escalation commands.
 - **`jsonl_parser.py`**: Ingests newline-delimited JSON application logs, mapping standard synonyms (`time`, `timestamp`, `level`, `req_id`) while isolating unmapped attributes into `extra_fields`.
 - **`web_access_parser.py`**: Parses Apache/Nginx Common Log Format (CLF) and Combined Log Format, capturing client IP, HTTP method, URI, status codes, user agents, and request IDs.
 - **`csv_firewall_parser.py`**: Ingests packet filter logs (timestamp, src_ip, dst_ip, proto, action, rule_id).
+- **`auditd_parser.py`**: Parses Linux audit subsystem logs (`type=SYSCALL`, `EXECVE`, `USER_AUTH`, `USER_CMD`), hex-decoding command arguments (`proctitle`), correlating events via audit serial numbers, and mapping syscall results to canonical severities.
+- **`windows_event_parser.py`**: Ingests Windows Security Event logs formatted as CSV or JSON, extracting Event IDs (4624 Logon, 4625 Auth Failure, 4672 Special Privileges, 1102 Audit Log Cleared, 4688 Process Creation) with security descriptor mappings.
+- **`custom_regex_parser.py`**: Allows investigators to define custom named-group regular expressions (`(?P<timestamp>...)`, `(?P<host>...)`, `(?P<user>...)`, `(?P<severity>...)`, `(?P<message>...)`) with live preview testing against sample lines.
 - **`detector.py`**: Explainable autodetection assessing sample lines against regex signatures with transparent confidence scores.
 
 ### 3.3 Timeline & Normalization (`src/timeline/`)
@@ -77,7 +82,7 @@ flowchart TD
 - **`clock_skew.py`**: Implements defensible clock-skew estimation:
   $$\text{offset} = \text{target\_clock} - \text{reference\_clock}$$
   $$\text{corrected\_time} = \text{target\_time} - \text{offset}$$
-  Estimates offset using the median of confirmed anchor pairs and measures spread using Median Absolute Deviation (MAD). Requires $\ge 2$ independent anchors; otherwise labels the relationship `INCONCLUSIVE`.
+  Estimates offset using the median of confirmed anchor pairs and measures spread using Median Absolute Deviation (MAD). Requires $\ge 2$ independent anchors; otherwise labels the relationship `INCONCLUSIVE`. Supports Theil-Sen robust linear drift estimation ($\text{ppm}$) and 2-hop transitive clock-skew propagation ($A \leftrightarrow B \leftrightarrow C$) with latency guard checks and combined MAD variance propagation ($\sqrt{\text{MAD}_1^2 + \text{MAD}_2^2}$).
 - **`assembler.py`**: Merges events into a unified timeline with deterministic secondary tie-breaking on `(evidence_id, line_number, event_id)`.
 - **`search.py`**: Full-text keyword search and multi-attribute conjunctive filtering.
 

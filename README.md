@@ -2,7 +2,7 @@
 
 **AIORI-3 Cybersecurity Problem Statement PS-013: Incident Timeline and Evidence Collection for Small Teams**
 
-[![Test Suite](https://img.shields.io/badge/pytest-104%20passed-brightgreen.svg)]()
+[![Test Suite](https://img.shields.io/badge/pytest-127%20passed-brightgreen.svg)]()
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.14-blue.svg)]()
 [![License](https://img.shields.io/badge/license-MIT-green.svg)]()
 [![Offline](https://img.shields.io/badge/operation-100%25%20offline-success.svg)]()

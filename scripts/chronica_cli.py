@@ -86,6 +86,8 @@ def collect_file_targets(input_paths: List[str]) -> List[Path]:
         elif p.is_dir():
             for root, _, files in os.walk(p):
                 for f in sorted(files):
+                    if f.startswith(".") or f.endswith(".bak") or f.endswith("_ground_truth.json"):
+                        continue
                     targets.append(Path(root) / f)
     return targets
 

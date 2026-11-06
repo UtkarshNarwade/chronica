@@ -153,6 +153,9 @@ class ForensicPipeline:
                     clean_name = Path(info.filename).name
                     if not clean_name or clean_name.startswith(".") or "__MACOSX" in info.filename:
                         continue
+                    if clean_name in [n for n, _ in extracted]:
+                        parent_prefix = Path(info.filename).parent.name
+                        clean_name = f"{parent_prefix}_{clean_name}" if parent_prefix else clean_name
                     member_bytes = zf.read(info.filename)
                     cumulative_size += len(member_bytes)
                     if cumulative_size > limit:
@@ -171,6 +174,9 @@ class ForensicPipeline:
                     clean_name = Path(member.name).name
                     if not clean_name or clean_name.startswith(".") or "__MACOSX" in member.name:
                         continue
+                    if clean_name in [n for n, _ in extracted]:
+                        parent_prefix = Path(member.name).parent.name
+                        clean_name = f"{parent_prefix}_{clean_name}" if parent_prefix else clean_name
                     f = tf.extractfile(member)
                     if f is None:
                         continue
@@ -542,6 +548,7 @@ class ForensicPipeline:
                         spread_mad_sec=total_mad,
                         min_offset_sec=min_off,
                         max_offset_sec=max_off,
+                        drift_rate_ppm=hop_est.drift_rate_ppm,
                         estimation_method=f"Transitive 2-hop median via '{inter_src}'",
                         status="ESTIMATED",
                         within_latency_tolerance=within_tol,
