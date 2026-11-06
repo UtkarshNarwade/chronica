@@ -539,8 +539,12 @@ active_inv = repo.get_investigation(st.session_state.active_investigation_id) or
 st.sidebar.markdown(
     """
     <div style="background: linear-gradient(135deg, #0F172A 0%, #1E293B 100%); border: 1px solid #334155; border-left: 4px solid #0066CC; border-radius: 6px; padding: 12px 14px; box-shadow: 0 2px 4px rgba(15,23,42,0.08); margin-bottom: 12px;">
-        <div style="display: flex; align-items: center; gap: 8px;">
-            <div style="width: 10px; height: 10px; background: #0088FF; border-radius: 2px;"></div>
+        <div style="display: flex; align-items: center; gap: 10px;">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="flex-shrink: 0;">
+                <path d="M12 2L3 6V11.5C3 16.5 6.8 21.2 12 22.5C17.2 21.2 21 16.5 21 11.5V6L12 2Z" fill="#0066CC" stroke="#38BDF8" stroke-width="1.5"/>
+                <circle cx="12" cy="12.5" r="4" stroke="#FFFFFF" stroke-width="1.2" fill="#0F172A"/>
+                <path d="M12 10.5V12.5L13.5 13.5" stroke="#38BDF8" stroke-width="1.3" stroke-linecap="round"/>
+            </svg>
             <div style="font-size: 15px; font-weight: 700; color: #FFFFFF; letter-spacing: 0.5px;">CHRONICA</div>
         </div>
         <div style="font-size: 10px; color: #38BDF8; font-family: monospace; margin-top: 4px; letter-spacing: 0.5px;">
@@ -823,6 +827,51 @@ if nav_section == "Security Overview":
         )
 
     st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+
+    # 7-Stage ATT&CK Tactic Matrix Strip
+    tactic_defs = [
+        ("Initial Access", ["Initial Access", "TA0001", "login", "ssh"]),
+        ("Execution", ["Execution", "TA0002", "exec", "cmd", "powershell"]),
+        ("Persistence", ["Persistence", "TA0003", "cron", "service", "systemd"]),
+        ("Privilege Escalation", ["Privilege Escalation", "TA0004", "sudo", "shadow", "setuid"]),
+        ("Defense Evasion", ["Defense Evasion", "TA0005", "tamper", "1102", "4616"]),
+        ("Credential Access", ["Credential Access", "TA0006", "auth_fail", "brute", "password"]),
+        ("Lateral Movement", ["Lateral Movement", "TA0008", "psexec", "smb", "rdp"]),
+    ]
+
+    tac_cols = st.columns(7)
+    for t_idx, (t_name, t_kws) in enumerate(tactic_defs):
+        m_count = 0
+        for ev in events:
+            ev_tags = [str(t).lower() for t in ev.extra_fields.get("tags", [])]
+            ev_desc = (ev.description or "").lower()
+            ev_raw = (ev.raw_text or "").lower()
+            if any(kw.lower() in ev_tags for kw in t_kws):
+                m_count += 1
+            elif any(kw.lower() in ev_desc or kw.lower() in ev_raw for kw in t_kws if len(kw) > 3):
+                m_count += 1
+        for lead in heuristic_leads:
+            l_tactic = (getattr(lead, "mitre_tactic", "") or "").lower()
+            if any(kw.lower() in l_tactic for kw in t_kws):
+                m_count += len(getattr(lead, "involved_event_ids", [])) or 1
+
+        bg_color = "#FEF2F2" if m_count > 5 else ("#FFFBEB" if m_count > 0 else "#FFFFFF")
+        border_color = "#F87171" if m_count > 5 else ("#FBBF24" if m_count > 0 else "#E2E8F0")
+        num_color = "#DC2626" if m_count > 5 else ("#D97706" if m_count > 0 else "#64748B")
+
+        with tac_cols[t_idx]:
+            st.markdown(
+                f"""
+                <div style="background: {bg_color}; border: 1px solid {border_color}; border-radius: 6px; padding: 7px 8px; text-align: center; margin-bottom: 12px; box-shadow: 0 1px 2px rgba(15,23,42,0.03);">
+                    <div style="font-size: 10px; font-weight: 700; color: #475569; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="{t_name}">{t_name}</div>
+                    <div style="font-size: 16px; font-weight: 800; color: {num_color}; margin-top: 2px;">{m_count}</div>
+                    <div style="font-size: 9px; color: #94A3B8;">Events & Leads</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+    st.markdown("<div style='height: 4px;'></div>", unsafe_allow_html=True)
 
     # Row 1: Swimlane & Donut
     r1_col1, r1_col2 = st.columns([2.2, 1])
@@ -1238,24 +1287,42 @@ elif nav_section == "Event Discovery & Timeline":
             ])
 
             with insp_tab1:
+                import html as html_lib
                 off_sec = f"{selected_event.estimated_clock_offset_sec:+.3f}s" if selected_event.estimated_clock_offset_sec is not None else "0.000s (Uncorrected)"
+                esc_id = html_lib.escape(str(selected_event.event_id or ""))
+                esc_raw_ts = html_lib.escape(str(selected_event.original_timestamp_str or "None"))
+                esc_norm_ts = html_lib.escape(str(selected_event.normalized_utc_iso or "Unresolved"))
+                esc_norm_st = html_lib.escape(str(selected_event.normalization_status or ""))
+                esc_corr_ts = html_lib.escape(str(selected_event.corrected_utc_iso or "Unresolved"))
+                esc_corr_st = html_lib.escape(str(selected_event.correction_status or ""))
+                esc_host = html_lib.escape(str(selected_event.source_host or selected_event.original_filename or ""))
+                esc_app = html_lib.escape(str(selected_event.source_app or "N/A"))
+                esc_sev = html_lib.escape(str(selected_event.severity or "INFO"))
+                esc_cat = html_lib.escape(str(selected_event.category or ""))
+                esc_user = html_lib.escape(str(selected_event.actor or "N/A"))
+                esc_ip = html_lib.escape(str(selected_event.src_ip or "N/A"))
+                esc_req = html_lib.escape(str(selected_event.request_id or "N/A"))
+                esc_sess = html_lib.escape(str(selected_event.session_id or "N/A"))
+                esc_desc = html_lib.escape(str(selected_event.description or ""))
+                esc_raw = html_lib.escape(str(selected_event.raw_text or ""))
+
                 rows_html = f"""
                 <table class="ch-inspect-table">
-                    <tr><td class="ch-inspect-key">_id</td><td class="ch-inspect-val"><code>{selected_event.event_id}</code></td></tr>
-                    <tr><td class="ch-inspect-key">timestamp.raw</td><td class="ch-inspect-val"><code>{selected_event.original_timestamp_str or 'None'}</code></td></tr>
-                    <tr><td class="ch-inspect-key">timestamp.normalized_utc</td><td class="ch-inspect-val"><code>{selected_event.normalized_utc_iso or 'Unresolved'}</code> ({selected_event.normalization_status})</td></tr>
-                    <tr><td class="ch-inspect-key">timestamp.corrected_utc</td><td class="ch-inspect-val"><code>{selected_event.corrected_utc_iso or 'Unresolved'}</code> ({selected_event.correction_status})</td></tr>
+                    <tr><td class="ch-inspect-key">_id</td><td class="ch-inspect-val"><code>{esc_id}</code></td></tr>
+                    <tr><td class="ch-inspect-key">timestamp.raw</td><td class="ch-inspect-val"><code>{esc_raw_ts}</code></td></tr>
+                    <tr><td class="ch-inspect-key">timestamp.normalized_utc</td><td class="ch-inspect-val"><code>{esc_norm_ts}</code> ({esc_norm_st})</td></tr>
+                    <tr><td class="ch-inspect-key">timestamp.corrected_utc</td><td class="ch-inspect-val"><code>{esc_corr_ts}</code> ({esc_corr_st})</td></tr>
                     <tr><td class="ch-inspect-key">clock.offset_sec</td><td class="ch-inspect-val"><code>{off_sec}</code></td></tr>
-                    <tr><td class="ch-inspect-key">source_host</td><td class="ch-inspect-val"><code>{selected_event.source_host or selected_event.original_filename}</code></td></tr>
-                    <tr><td class="ch-inspect-key">source_app</td><td class="ch-inspect-val"><code>{selected_event.source_app or 'N/A'}</code></td></tr>
-                    <tr><td class="ch-inspect-key">severity</td><td class="ch-inspect-val"><span class="ch-pill-slate">{selected_event.severity}</span></td></tr>
-                    <tr><td class="ch-inspect-key">category</td><td class="ch-inspect-val"><code>{selected_event.category}</code></td></tr>
-                    <tr><td class="ch-inspect-key">username</td><td class="ch-inspect-val"><code>{selected_event.actor or 'N/A'}</code></td></tr>
-                    <tr><td class="ch-inspect-key">src_ip</td><td class="ch-inspect-val"><code>{selected_event.src_ip or 'N/A'}</code></td></tr>
-                    <tr><td class="ch-inspect-key">request_id</td><td class="ch-inspect-val"><code>{selected_event.request_id or 'N/A'}</code></td></tr>
-                    <tr><td class="ch-inspect-key">session_id</td><td class="ch-inspect-val"><code>{selected_event.session_id or 'N/A'}</code></td></tr>
-                    <tr><td class="ch-inspect-key">description</td><td class="ch-inspect-val">{selected_event.description}</td></tr>
-                    <tr><td class="ch-inspect-key">raw_text</td><td class="ch-inspect-val" style="font-family: monospace; font-size: 11px;">{selected_event.raw_text}</td></tr>
+                    <tr><td class="ch-inspect-key">source_host</td><td class="ch-inspect-val"><code>{esc_host}</code></td></tr>
+                    <tr><td class="ch-inspect-key">source_app</td><td class="ch-inspect-val"><code>{esc_app}</code></td></tr>
+                    <tr><td class="ch-inspect-key">severity</td><td class="ch-inspect-val"><span class="ch-pill-slate">{esc_sev}</span></td></tr>
+                    <tr><td class="ch-inspect-key">category</td><td class="ch-inspect-val"><code>{esc_cat}</code></td></tr>
+                    <tr><td class="ch-inspect-key">username</td><td class="ch-inspect-val"><code>{esc_user}</code></td></tr>
+                    <tr><td class="ch-inspect-key">src_ip</td><td class="ch-inspect-val"><code>{esc_ip}</code></td></tr>
+                    <tr><td class="ch-inspect-key">request_id</td><td class="ch-inspect-val"><code>{esc_req}</code></td></tr>
+                    <tr><td class="ch-inspect-key">session_id</td><td class="ch-inspect-val"><code>{esc_sess}</code></td></tr>
+                    <tr><td class="ch-inspect-key">description</td><td class="ch-inspect-val">{esc_desc}</td></tr>
+                    <tr><td class="ch-inspect-key">raw_text</td><td class="ch-inspect-val" style="font-family: monospace; font-size: 11px;">{esc_raw}</td></tr>
                 </table>
                 """
                 st.markdown(rows_html, unsafe_allow_html=True)
@@ -1298,6 +1365,45 @@ elif nav_section == "Event Discovery & Timeline":
                             del st.session_state["pipeline_cache"]
                         st.toast("Annotation recorded to audit chain.")
                         st.rerun()
+
+                st.markdown("<hr style='border: none; border-top: 1px solid #E2E8F0; margin: 12px 0;'>", unsafe_allow_html=True)
+                st.markdown("<strong>Correlated Sibling Events</strong>", unsafe_allow_html=True)
+
+                sib_rows = []
+                sel_req = selected_event.request_id or selected_event.extra_fields.get("request_id")
+                sel_sess = selected_event.session_id or selected_event.extra_fields.get("session_id")
+                sel_user = selected_event.actor or selected_event.username
+                sel_host = selected_event.source_host
+
+                for e in events:
+                    if e.event_id == selected_event.event_id:
+                        continue
+                    e_req = e.request_id or e.extra_fields.get("request_id")
+                    e_sess = e.session_id or e.extra_fields.get("session_id")
+                    e_user = e.actor or e.username
+                    e_host = e.source_host
+
+                    rel = None
+                    if sel_req and e_req and str(sel_req) == str(e_req):
+                        rel = f"Matching Request ID ({sel_req})"
+                    elif sel_sess and e_sess and str(sel_sess) == str(e_sess):
+                        rel = f"Matching Session ID ({sel_sess})"
+                    elif sel_user and e_user and str(sel_user).lower() == str(e_user).lower() and e_host != sel_host:
+                        rel = f"Cross-Host Actor Activity ({sel_user})"
+
+                    if rel:
+                        sib_rows.append({
+                            "Event ID": e.event_id,
+                            "Corrected UTC": e.corrected_utc_iso or e.normalized_utc_iso or "Unresolved",
+                            "Host": e.source_host or e.original_filename,
+                            "Relationship": rel,
+                            "Description": e.description[:70],
+                        })
+
+                if sib_rows:
+                    st.dataframe(pd.DataFrame(sib_rows[:25]), use_container_width=True, hide_index=True)
+                else:
+                    st.caption("No cross-host sibling events correlated by Request ID, Session ID, or Actor.")
     else:
         st.info("No events available in active investigation.")
 
@@ -1314,6 +1420,7 @@ elif nav_section == "Threat Hunting & Topology":
         is_regex = st.checkbox("Regex Mode", value=False, key="th_regex_check")
     with search_col3:
         exclude_kw = st.text_input("NOT (Exclude Term)", value="", placeholder="e.g. cron", key="th_exclude_input")
+    st.caption("CQL Syntax: `host:web-01` `user:admin` `ip:10.0.0.1` `severity:CRITICAL` `req:req-1234` `session:sess-1` `file:auth.log` `status:CORRECTED` `NOT term`")
 
     f_c1, f_c2, f_c3, f_c4, f_c5 = st.columns(5)
     with f_c1:
@@ -1512,8 +1619,12 @@ elif nav_section == "Evidence Integrity & Ledger":
                     p = repo.get_evidence_file_path(active_inv.investigation_id, target_ent.evidence_id)
                     if p and p.exists():
                         try:
+                            bak_path = p.parent / f"tamper_backup_{target_ent.evidence_id}.bak"
                             p.chmod(stat.S_IWRITE)
-                            data = bytearray(p.read_bytes())
+                            original_bytes = p.read_bytes()
+                            if not bak_path.exists():
+                                bak_path.write_bytes(original_bytes)
+                            data = bytearray(original_bytes)
                             if data:
                                 data[0] ^= 0x01
                                 p.write_bytes(data)
@@ -1531,10 +1642,37 @@ elif nav_section == "Evidence Integrity & Ledger":
                             st.error(f"Injection error: {e}")
             with sim_col2:
                 if st.button("Restore Clean Artifact State", key="sim_restore_btn"):
-                    if "pipeline_cache" in st.session_state:
-                        del st.session_state["pipeline_cache"]
-                    st.toast("State refreshed.")
-                    st.rerun()
+                    p = repo.get_evidence_file_path(active_inv.investigation_id, target_ent.evidence_id)
+                    if p and p.exists():
+                        try:
+                            bak_path = p.parent / f"tamper_backup_{target_ent.evidence_id}.bak"
+                            p.chmod(stat.S_IWRITE)
+                            if bak_path.exists():
+                                clean_bytes = bak_path.read_bytes()
+                                p.write_bytes(clean_bytes)
+                                try:
+                                    bak_path.unlink()
+                                except Exception:
+                                    pass
+                            else:
+                                curr_data = bytearray(p.read_bytes())
+                                if curr_data:
+                                    curr_data[0] ^= 0x01
+                                    p.write_bytes(curr_data)
+                            p.chmod(stat.S_IREAD)
+                            audit_ledger.append(
+                                action="ARTIFACT_RESTORED",
+                                summary=f"Controlled clean state restored for '{target_ent.original_filename}'.",
+                                details={"evidence_id": target_ent.evidence_id},
+                            )
+                            if "pipeline_cache" in st.session_state:
+                                del st.session_state["pipeline_cache"]
+                            st.success(f"Clean state successfully restored for {target_ent.original_filename}.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Restore error: {e}")
+                    else:
+                        st.info("Artifact path could not be resolved.")
 
 
 # =================================================================================================
@@ -1597,6 +1735,21 @@ elif nav_section == "Log Acquisition & Parsers":
             })
         st.dataframe(pd.DataFrame(det_rows), use_container_width=True, hide_index=True)
 
+        if sel_parser == "custom_regex":
+            st.markdown("<strong>Custom Named Regex Extraction Preview</strong>", unsafe_allow_html=True)
+            from src.parsers.custom_regex_parser import CustomRegexParser
+            try:
+                rx_tester = CustomRegexParser(pattern=custom_rx)
+                uf0_text = uploaded_files[0].getvalue()[:8192].decode("utf-8", errors="replace")
+                rx_sample = [ln.strip() for ln in uf0_text.splitlines() if ln.strip()][:5]
+                test_recs = rx_tester.test_pattern(rx_sample)
+                if test_recs:
+                    st.dataframe(pd.DataFrame(test_recs), use_container_width=True, hide_index=True)
+                else:
+                    st.caption("No sample lines matched the custom pattern.")
+            except Exception as rx_err:
+                st.caption(f"Regex validation warning: {rx_err}")
+
         if st.button("Ingest, Hash & Parse Evidence", type="primary", key="ingest_execute_btn"):
             prog = st.progress(0)
             total_files = len(uploaded_files)
@@ -1607,6 +1760,7 @@ elif nav_section == "Log Acquisition & Parsers":
                     data=uf.getvalue(),
                     explicit_format=None if sel_parser == "autodetect" else sel_parser,
                     assigned_timezone=assigned_tz,
+                    custom_regex=custom_rx if sel_parser == "custom_regex" else None,
                 )
                 prog.progress((idx + 1) / total_files)
             if "pipeline_cache" in st.session_state:
@@ -1698,45 +1852,139 @@ elif nav_section == "Clock-Skew Synchronization":
                 yaxis=dict(gridcolor="#F1F5F9", linecolor="#CBD5E1"),
             )
             st.plotly_chart(fig_anc, use_container_width=True)
+
+            # Cross-Host Transaction Latency Waterfall Chart
+            import plotly.graph_objects as go
+            st.markdown("<strong>Cross-Host Transaction Latency & Timing Delta Waterfall</strong>", unsafe_allow_html=True)
+            wf_items = []
+            for a in anchors[:12]:
+                wf_items.append({
+                    "step": f"{a.reference_source} -> {a.target_source} ({a.anchor_key[:10]})",
+                    "delta": round(a.raw_offset_sec, 3),
+                })
+            if wf_items:
+                wf_steps = [item["step"] for item in wf_items]
+                wf_deltas = [item["delta"] for item in wf_items]
+                fig_wf = go.Figure(go.Waterfall(
+                    name="Timing Delta",
+                    orientation="v",
+                    measure=["relative"] * len(wf_steps),
+                    x=wf_steps,
+                    textposition="outside",
+                    text=[f"{d:+.3f}s" for d in wf_deltas],
+                    y=wf_deltas,
+                    connector={"line": {"color": "#94A3B8"}},
+                    decreasing={"marker": {"color": "#0066CC"}},
+                    increasing={"marker": {"color": "#D97706"}},
+                ))
+                fig_wf.update_layout(
+                    paper_bgcolor="#FFFFFF",
+                    plot_bgcolor="#FFFFFF",
+                    font=dict(color="#0F172A", size=11),
+                    margin=dict(l=20, r=20, t=20, b=40),
+                    xaxis=dict(gridcolor="#F1F5F9", tickangle=-25),
+                    yaxis=dict(gridcolor="#F1F5F9", title="Timing Delta (seconds)"),
+                    height=280,
+                )
+                st.plotly_chart(fig_wf, use_container_width=True)
     else:
         st.info("No cross-host clock skew estimates available. Requires events from 2 or more hosts.")
 
     # Manual Anchor Form
     with st.expander("Manual Investigator Anchor Linker", expanded=False):
         st.caption("Link two specific events as simultaneous physical synchronization anchors.")
+
+        event_choices = ["(Manual ID Input)"] + [
+            f"{e.event_id} | {e.source_host or e.original_filename} | {e.normalized_utc_iso or e.original_timestamp_str} | {e.description[:35]}"
+            for e in events[:200]
+        ]
+
         man_c1, man_c2 = st.columns(2)
         with man_c1:
-            tar_src = st.text_input("Target Source Host", placeholder="e.g. host-b", key="man_tar_src")
-            tar_eid = st.text_input("Target Event ID", placeholder="e.g. evt_12345", key="man_tar_eid")
+            sel_tar = st.selectbox("Target Event Selection", options=event_choices, key="man_tar_select")
+            if sel_tar.startswith("(Manual"):
+                tar_eid = st.text_input("Target Event ID", placeholder="e.g. evt_12345", key="man_tar_eid")
+                tar_src = st.text_input("Target Source Host", placeholder="e.g. host-b", key="man_tar_src")
+            else:
+                tar_eid = sel_tar.split(" | ")[0]
+                tar_src = sel_tar.split(" | ")[1]
+
         with man_c2:
-            ref_src = st.text_input("Reference Source Host", value=active_inv.reference_source or "", key="man_ref_src")
-            ref_eid = st.text_input("Reference Event ID", placeholder="e.g. evt_67890", key="man_ref_eid")
+            sel_ref = st.selectbox("Reference Event Selection", options=event_choices, key="man_ref_select")
+            if sel_ref.startswith("(Manual"):
+                ref_eid = st.text_input("Reference Event ID", placeholder="e.g. evt_67890", key="man_ref_eid")
+                ref_src = st.text_input("Reference Source Host", value=active_inv.reference_source or "", key="man_ref_src")
+            else:
+                ref_eid = sel_ref.split(" | ")[0]
+                ref_src = sel_ref.split(" | ")[1]
+
         anchor_notes = st.text_input("Investigator Anchor Justification", placeholder="e.g. Confirmed NTP handshake", key="man_anc_notes")
 
-        if st.button("Register Manual Anchor", key="man_anchor_btn"):
-            if tar_src and tar_eid and ref_src and ref_eid:
-                new_anchor = {
-                    "anchor_id": f"anc_man_{datetime.now().strftime('%H%M%S')}",
-                    "target_event_id": tar_eid,
-                    "target_source": tar_src,
-                    "target_utc_iso": datetime.now(timezone.utc).isoformat(),
-                    "target_utc_epoch": datetime.now(timezone.utc).timestamp(),
-                    "reference_event_id": ref_eid,
-                    "reference_source": ref_src,
-                    "reference_utc_iso": datetime.now(timezone.utc).isoformat(),
-                    "reference_utc_epoch": datetime.now(timezone.utc).timestamp(),
-                    "anchor_type": "INVESTIGATOR_CONFIRMED",
-                    "anchor_key": "manual-sync",
-                    "raw_offset_sec": 0.0,
-                    "is_confirmed": True,
-                    "confidence_notes": anchor_notes,
-                }
-                active_inv.manual_anchors.append(new_anchor)
-                repo.update_investigation(active_inv)
-                if "pipeline_cache" in st.session_state:
-                    del st.session_state["pipeline_cache"]
-                st.success("Manual anchor registered.")
-                st.rerun()
+        btn_c1, btn_c2 = st.columns(2)
+        with btn_c1:
+            if st.button("Register Manual Anchor", key="man_anchor_btn"):
+                if tar_eid and ref_eid:
+                    tar_ev = next((e for e in events if e.event_id == tar_eid), None)
+                    ref_ev = next((e for e in events if e.event_id == ref_eid), None)
+
+                    def _get_epoch(ev_obj, fallback_host):
+                        if not ev_obj:
+                            return datetime.now(timezone.utc).timestamp(), datetime.now(timezone.utc).isoformat(), fallback_host
+                        ts_str = ev_obj.normalized_utc_iso or ev_obj.corrected_utc_iso or ev_obj.original_timestamp_str
+                        try:
+                            ep = datetime.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp()
+                        except Exception:
+                            ep = datetime.now(timezone.utc).timestamp()
+                        return ep, ts_str or datetime.now(timezone.utc).isoformat(), ev_obj.source_host or fallback_host
+
+                    tar_epoch, tar_iso, actual_tar_src = _get_epoch(tar_ev, tar_src)
+                    ref_epoch, ref_iso, actual_ref_src = _get_epoch(ref_ev, ref_src)
+                    calculated_offset = round(tar_epoch - ref_epoch, 3)
+
+                    new_anchor = {
+                        "anchor_id": f"anc_man_{datetime.now().strftime('%H%M%S')}",
+                        "target_event_id": tar_eid,
+                        "target_source": actual_tar_src,
+                        "target_utc_iso": tar_iso,
+                        "target_utc_epoch": tar_epoch,
+                        "reference_event_id": ref_eid,
+                        "reference_source": actual_ref_src,
+                        "reference_utc_iso": ref_iso,
+                        "reference_utc_epoch": ref_epoch,
+                        "anchor_type": "INVESTIGATOR_CONFIRMED",
+                        "anchor_key": "manual-sync",
+                        "raw_offset_sec": calculated_offset,
+                        "is_confirmed": True,
+                        "confidence_notes": anchor_notes,
+                    }
+                    active_inv.manual_anchors.append(new_anchor)
+                    audit_ledger.append(
+                        action="MANUAL_ANCHOR_ADDED",
+                        summary=f"Manual anchor linked between '{actual_tar_src}' and '{actual_ref_src}' (Offset: {calculated_offset:+.3f}s).",
+                        details={"target_id": tar_eid, "reference_id": ref_eid, "offset": calculated_offset},
+                    )
+                    repo.update_investigation(active_inv)
+                    if "pipeline_cache" in st.session_state:
+                        del st.session_state["pipeline_cache"]
+                    st.success(f"Manual anchor registered (Calculated Offset: {calculated_offset:+.3f}s).")
+                    st.rerun()
+                else:
+                    st.warning("Please provide both Target and Reference Event IDs.")
+
+        with btn_c2:
+            if active_inv.manual_anchors:
+                if st.button("Clear All Manual Anchors", key="clear_man_anchors_btn"):
+                    active_inv.manual_anchors = []
+                    audit_ledger.append(
+                        action="MANUAL_ANCHORS_CLEARED",
+                        summary="Investigator cleared all manual synchronization anchors.",
+                        details={},
+                    )
+                    repo.update_investigation(active_inv)
+                    if "pipeline_cache" in st.session_state:
+                        del st.session_state["pipeline_cache"]
+                    st.toast("Manual anchors cleared.")
+                    st.rerun()
 
 
 # =================================================================================================

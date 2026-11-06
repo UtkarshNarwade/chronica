@@ -525,3 +525,143 @@ class TestPipelineDeduplicationAndHeaderSkipping:
         p3, ev3 = pipeline.ingest_evidence_bytes("dedup_test", "file3.jsonl", log_data, allow_duplicate=True)
         assert p3.evidence_id != p1.evidence_id
         assert len(ev3) == 1
+
+
+# ── Structured CQL Query Parser Tests ─────────────────────────────────────────
+
+class TestStructuredCQLQueryParser:
+    def test_parse_cql_query_tokens(self):
+        from src.timeline.search import parse_cql_query
+        q = 'host:srv-01 user:admin ip:192.168.1.1 severity:CRITICAL req:req-99 session:sess-1 status:CORRECTED NOT failure keyword'
+        preds = parse_cql_query(q)
+        assert "srv-01" in preds.hosts
+        assert "admin" in preds.users
+        assert "192.168.1.1" in preds.ips
+        assert "CRITICAL" in preds.severities
+        assert "req-99" in preds.request_ids
+        assert "sess-1" in preds.session_ids
+        assert "CORRECTED" in preds.statuses
+        assert "failure" in preds.not_terms
+        assert "keyword" in preds.free_terms
+
+    def test_cql_filtering_in_search_engine(self):
+        from src.timeline.search import FilterCriteria, TimelineSearchEngine
+        ev1 = Event.create(
+            investigation_id="inv1",
+            evidence_id="ev01",
+            original_filename="auth.log",
+            line_number=1,
+            raw_text="Admin logon success",
+            original_timestamp_str="2026-10-12T10:00:00Z",
+            source_host="web-01",
+            username="admin",
+            src_ip="10.0.0.5",
+            severity="AUTH_SUCCESS",
+            category="AUTH",
+            request_id="req-100",
+        )
+        ev2 = Event.create(
+            investigation_id="inv1",
+            evidence_id="ev02",
+            original_filename="syslog.log",
+            line_number=2,
+            raw_text="Service stopped failure",
+            original_timestamp_str="2026-10-12T10:01:00Z",
+            source_host="db-01",
+            username="service_acc",
+            src_ip="10.0.0.8",
+            severity="ERROR",
+            category="SYSTEM",
+            request_id="req-200",
+        )
+
+        events = [ev1, ev2]
+
+        # Filter by host
+        res1 = TimelineSearchEngine.filter_events(events, FilterCriteria(keyword="host:web-01"))
+        assert res1.filtered_events == 1
+        assert res1.events[0].source_host == "web-01"
+
+        # Filter by NOT
+        res2 = TimelineSearchEngine.filter_events(events, FilterCriteria(keyword="NOT failure"))
+        assert res2.filtered_events == 1
+        assert res2.events[0].source_host == "web-01"
+
+        # Filter by severity and user
+        res3 = TimelineSearchEngine.filter_events(events, FilterCriteria(keyword="user:admin severity:AUTH_SUCCESS"))
+        assert res3.filtered_events == 1
+        assert res3.events[0].event_id == ev1.event_id
+
+
+# ── Repository File Path Resolution Tests ─────────────────────────────────────
+
+class TestEvidenceFilePathResolution:
+    def test_get_evidence_file_path_various_naming_schemes(self, tmp_path):
+        from src.storage.repository import InvestigationRepository
+        repo = InvestigationRepository(tmp_path / "data")
+        inv = repo.create_investigation("res_test", "Resolution Test")
+        ev_dir = repo.get_evidence_dir("res_test")
+
+        # Create dummy evidence file
+        dummy_file = ev_dir / "ev_test_123_sample.log"
+        dummy_file.write_text("sample content")
+
+        found_path = repo.get_evidence_file_path("res_test", "ev_test_123")
+        assert found_path is not None
+        assert found_path.name == "ev_test_123_sample.log"
+
+
+# ── Pipeline Custom Regex Ingestion Tests ─────────────────────────────────────
+
+class TestPipelineCustomRegexIngestion:
+    def test_custom_regex_ingestion(self, tmp_path):
+        from src.pipeline import ForensicPipeline
+        from src.storage.repository import InvestigationRepository
+
+        repo = InvestigationRepository(tmp_path / "data")
+        repo.create_investigation("regex_inv", "Regex Ingestion Test")
+        pipeline = ForensicPipeline(repo)
+
+        custom_rx = r"^(?P<timestamp>\S+)\s+\[(?P<host>\S+)\]\s+(?P<user>\S+)\s+(?P<message>.*)$"
+        raw_log = b"2026-10-12T12:00:00Z [app-server] alice User logged in\n2026-10-12T12:01:00Z [app-server] bob Action performed\n"
+
+        pe, parsed_events = pipeline.ingest_evidence_bytes(
+            investigation_id="regex_inv",
+            filename="custom.log",
+            data=raw_log,
+            explicit_format="custom_regex",
+            custom_regex=custom_rx,
+        )
+
+        manifest = repo.get_manifest("regex_inv")
+        entry = manifest.get_entry(pe.evidence_id)
+        assert entry is not None
+        assert entry.detected_format == "custom_regex"
+        assert len(parsed_events) == 2
+        assert parsed_events[0].source_host == "app-server"
+        assert parsed_events[0].actor == "alice"
+
+
+# ── Heuristics Diagnostics Tests ──────────────────────────────────────────────
+
+class TestHeuristicsDiagnostics:
+    def test_heuristics_with_integrity_and_gap_diagnostics(self):
+        from src.diagnostics.gap_analysis import DiagnosticCategory, DiagnosticItem, DiagnosticSeverity
+        from src.diagnostics.heuristics import ForensicHeuristicEngine
+
+        engine = ForensicHeuristicEngine()
+        diag = DiagnosticItem(
+            diag_id="diag_01",
+            category=DiagnosticCategory.H_EVIDENCE_INTEGRITY_ISSUE,
+            severity=DiagnosticSeverity.CRITICAL,
+            affected_target="auth.log",
+            explanation="Hash mismatch detected",
+            supporting_details="SHA-256 baseline changed",
+            suggested_action="Review integrity",
+        )
+
+        leads = engine.analyze([], diagnostics=[diag])
+        assert any(l.rule_name == "CLOCK_OR_LOG_TAMPERING_INDICATOR" for l in leads)
+        tamper_lead = next(l for l in leads if l.rule_name == "CLOCK_OR_LOG_TAMPERING_INDICATOR")
+        assert "auth.log" in tamper_lead.hosts
+

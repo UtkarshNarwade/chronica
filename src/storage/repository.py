@@ -217,18 +217,48 @@ class InvestigationRepository:
         """Return the path to a specific evidence file on disk."""
         manifest = self.get_manifest(investigation_id)
         entry = manifest.get_entry(evidence_id)
-        if entry and entry.stored_relpath:
-            p = self._get_inv_dir(investigation_id) / entry.stored_relpath
-            if p.exists():
-                return p
         ev_dir = self.get_evidence_dir(investigation_id)
+        inv_dir = self._get_inv_dir(investigation_id)
+
         if entry:
-            cand = ev_dir / entry.original_filename
-            if cand.exists():
-                return cand
+            stored = getattr(entry, "stored_filename", None) or getattr(entry, "stored_relpath", None)
+            if stored:
+                p = ev_dir / stored
+                if p.is_file():
+                    return p
+                p2 = inv_dir / stored
+                if p2.is_file():
+                    return p2
+            relpath = getattr(entry, "stored_relpath", None)
+            if relpath:
+                p_rel = inv_dir / relpath
+                if p_rel.is_file():
+                    return p_rel
+                p_rel2 = ev_dir / relpath
+                if p_rel2.is_file():
+                    return p_rel2
+
+            if entry.original_filename:
+                cand = ev_dir / entry.original_filename
+                if cand.is_file():
+                    return cand
+                cand2 = inv_dir / entry.original_filename
+                if cand2.is_file():
+                    return cand2
+
+        # Check any file in ev_dir starting with evidence_id_ or matching evidence_id
+        if ev_dir.is_dir():
+            prefix = f"{evidence_id}_"
+            for f in ev_dir.iterdir():
+                if f.is_file() and (f.name.startswith(prefix) or f.name == f"{evidence_id}.bin" or f.name == evidence_id):
+                    return f
+
         cand = ev_dir / f"{evidence_id}.bin"
-        if cand.exists():
+        if cand.is_file():
             return cand
+        cand_bare = ev_dir / evidence_id
+        if cand_bare.is_file():
+            return cand_bare
         return None
 
     def verify_evidence_integrity(self, investigation_id: str):

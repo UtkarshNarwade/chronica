@@ -100,11 +100,12 @@ class ForensicHeuristicEngine:
     BRUTE_FORCE_WINDOW_SEC = 900  # 15 minutes
     MIN_FAIL_COUNT = 2
 
-    def analyze(self, events: Any) -> List[HeuristicLead]:
+    def analyze(self, events: Any, diagnostics: Optional[List[Any]] = None) -> List[HeuristicLead]:
         """Run all heuristic rules against the event set.
 
         Args:
             events: List of Event objects from the timeline.
+            diagnostics: Optional list of diagnostic findings (e.g. integrity failures, coverage gaps).
 
         Returns:
             List of HeuristicLead findings.
@@ -120,7 +121,7 @@ class ForensicHeuristicEngine:
         leads.extend(self._detect_brute_force(sorted_events))
         leads.extend(self._detect_privilege_escalation(sorted_events))
         leads.extend(self._detect_sensitive_data_export(sorted_events))
-        leads.extend(self._detect_clock_or_log_tampering(sorted_events))
+        leads.extend(self._detect_clock_or_log_tampering(sorted_events, diagnostics=diagnostics))
 
         return leads
 
@@ -311,7 +312,7 @@ class ForensicHeuristicEngine:
 
         return leads
 
-    def _detect_clock_or_log_tampering(self, events: List[Any]) -> List[HeuristicLead]:
+    def _detect_clock_or_log_tampering(self, events: List[Any], diagnostics: Optional[List[Any]] = None) -> List[HeuristicLead]:
         """Detect CLOCK_OR_LOG_TAMPERING_INDICATOR patterns.
 
         Pattern: Windows Event 1102/4616, Category H integrity mismatch,
@@ -330,8 +331,20 @@ class ForensicHeuristicEngine:
             elif ev.normalization_status == "INVALID_TIMESTAMP" and ev.severity in ("CRITICAL", "ERROR"):
                 tampering_events.append(ev)
 
-        if tampering_events:
+        diag_tampering = []
+        if diagnostics:
+            for d in diagnostics:
+                cat_val = getattr(d, "category", None)
+                cat_str = str(cat_val.value if hasattr(cat_val, "value") else cat_val)
+                if "H_EVIDENCE_INTEGRITY_ISSUE" in cat_str or "F_COVERAGE_GAP" in cat_str:
+                    diag_tampering.append(d)
+
+        if tampering_events or diag_tampering:
             hosts = sorted(list({e.source_host or e.original_filename for e in tampering_events}))
+            for d in diag_tampering:
+                tgt = getattr(d, "affected_target", None)
+                if tgt and tgt not in hosts:
+                    hosts.append(tgt)
             times = [e.normalized_utc_iso for e in tampering_events if e.normalized_utc_iso]
             span_str = ""
             if times:
@@ -343,17 +356,31 @@ class ForensicHeuristicEngine:
                 except Exception:
                     pass
 
+            diag_reasons = []
+            if diag_tampering:
+                for dt in diag_tampering:
+                    expl_txt = getattr(dt, "explanation", "")
+                    diag_reasons.append(f"{getattr(dt, 'category', '')}: {expl_txt}")
+
+            detail_msg = f"{len(tampering_events)} suspicious event(s)"
+            if diag_tampering:
+                detail_msg += f" and {len(diag_tampering)} integrity/coverage gap diagnostic(s)"
+
+            expl = (
+                f"[INVESTIGATIVE LEAD] {detail_msg} detected that may indicate "
+                f"log clearing (EventID 1102), system time modification (EventID 4616), "
+                f"evidence hash tampering, or telemetry coverage suppression. "
+            )
+            if diag_reasons:
+                expl += " Diagnostic alerts: " + " | ".join(diag_reasons[:3]) + "."
+            expl += " This requires immediate investigator review to determine whether evidence integrity has been compromised."
+
             leads.append(HeuristicLead(
                 lead_id=f"lead_tamper_{uuid.uuid4().hex[:8]}",
                 rule_name="CLOCK_OR_LOG_TAMPERING_INDICATOR",
                 severity="CRITICAL",
-                title=f"Possible Clock or Log Tampering Indicator ({len(tampering_events)} event(s))",
-                explanation=(
-                    f"[INVESTIGATIVE LEAD] {len(tampering_events)} event(s) detected that may indicate "
-                    f"log clearing (EventID 1102), system time modification (EventID 4616), or "
-                    f"audit log tampering. This requires immediate investigator review to determine "
-                    f"whether evidence integrity has been compromised."
-                ),
+                title=f"Possible Clock or Log Tampering Indicator ({detail_msg})",
+                explanation=expl,
                 involved_event_ids=[e.event_id for e in tampering_events[:20]],
                 hosts=hosts,
                 time_span_utc=span_str,

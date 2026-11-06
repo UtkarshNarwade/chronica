@@ -139,6 +139,7 @@ class ForensicPipeline:
         explicit_format: Optional[str] = None,
         assigned_timezone: Optional[str] = None,
         allow_duplicate: bool = False,
+        custom_regex: Optional[str] = None,
     ) -> Tuple[PreservedEvidence, List[Event]]:
         """Collect, preserve, hash, parse, and normalize an evidence file provided as bytes."""
         collector = self.repo.get_evidence_collector(investigation_id)
@@ -197,10 +198,17 @@ class ForensicPipeline:
             det_res = self.parser_registry.detect_format(sample_lines)
             detected_format = det_res.detected_format or "syslog"  # Fallback if inconclusive
 
-        parser = self.parser_registry.get_parser(detected_format)
-        if not parser:
-            parser = self.parser_registry.get_parser("syslog")
-            detected_format = "syslog"
+        if detected_format == "custom_regex":
+            from src.parsers.custom_regex_parser import CustomRegexParser
+            if custom_regex:
+                parser = CustomRegexParser(pattern=custom_regex)
+            else:
+                parser = self.parser_registry.get_parser("custom_regex")
+        else:
+            parser = self.parser_registry.get_parser(detected_format)
+            if not parser:
+                parser = self.parser_registry.get_parser("syslog")
+                detected_format = "syslog"
 
         # 4. Parse records preserving line numbers (strict line iterator)
         parsed_records = list(parser.parse_stream(iter(all_lines)))
@@ -467,7 +475,7 @@ class ForensicPipeline:
         try:
             from src.diagnostics.heuristics import ForensicHeuristicEngine
             engine = ForensicHeuristicEngine()
-            heuristic_leads = engine.analyze(corrected_events)
+            heuristic_leads = engine.analyze(corrected_events, diagnostics=diagnostics)
         except Exception:
             pass
 

@@ -189,3 +189,4 @@ def run_evaluation(
 def run_benchmark() -> List[CompleteEvaluationReport]:
     """CLI entrypoint alias for run_evaluation()."""
     return run_evaluation()
+
