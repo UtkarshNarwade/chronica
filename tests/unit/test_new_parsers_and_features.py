@@ -534,13 +534,13 @@ class TestStructuredCQLQueryParser:
         from src.timeline.search import parse_cql_query
         q = 'host:srv-01 user:admin ip:192.168.1.1 severity:CRITICAL req:req-99 session:sess-1 status:CORRECTED NOT failure keyword'
         preds = parse_cql_query(q)
-        assert "srv-01" in preds.hosts
-        assert "admin" in preds.users
-        assert "192.168.1.1" in preds.ips
-        assert "CRITICAL" in preds.severities
-        assert "req-99" in preds.request_ids
-        assert "sess-1" in preds.session_ids
-        assert "CORRECTED" in preds.statuses
+        assert any("srv-01" in grp for grp in preds.hosts)
+        assert any("admin" in grp for grp in preds.users)
+        assert any("192.168.1.1" in grp for grp in preds.ips)
+        assert any("CRITICAL" in grp for grp in preds.severities)
+        assert any("req-99" in grp for grp in preds.request_ids)
+        assert any("sess-1" in grp for grp in preds.session_ids)
+        assert any("CORRECTED" in grp for grp in preds.statuses)
         assert "failure" in preds.not_terms
         assert "keyword" in preds.free_terms
 
@@ -664,4 +664,171 @@ class TestHeuristicsDiagnostics:
         assert any(l.rule_name == "CLOCK_OR_LOG_TAMPERING_INDICATOR" for l in leads)
         tamper_lead = next(l for l in leads if l.rule_name == "CLOCK_OR_LOG_TAMPERING_INDICATOR")
         assert "auth.log" in tamper_lead.hosts
+
+
+# ── v2.1 Audit Remediation Tests ──────────────────────────────────────────────
+
+class TestJsonExportDefaultCoverage:
+    def test_json_export_default_coverage_stats_no_crash(self):
+        from src.reporting.json_export import export_investigation_json
+        from src.storage.repository import InvestigationMetadata
+        from src.evidence.manifest import EvidenceManifest
+
+        meta = InvestigationMetadata(
+            investigation_id="test_exp",
+            title="Test",
+            description="",
+            created_at_utc="2026-10-12T00:00:00Z",
+            last_updated_utc="2026-10-12T00:00:00Z",
+        )
+        manifest = EvidenceManifest(investigation_id="test_exp")
+        out = export_investigation_json(
+            metadata=meta,
+            manifest=manifest,
+            events=[],
+            diagnostics=[],
+            coverage_stats=None,
+        )
+        assert "Chronica Forensic Investigation Export" in out
+
+
+class TestMultiFileArchiveExpansion:
+    def test_multi_file_zip_expansion(self, tmp_path):
+        import zipfile
+        import io
+        from src.pipeline import ForensicPipeline
+        from src.storage.repository import InvestigationRepository
+
+        repo = InvestigationRepository(tmp_path / "data")
+        pipeline = ForensicPipeline(repo)
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("a.log", "2026-10-12T10:00:00Z line 1\n")
+            zf.writestr("b.jsonl", '{"timestamp": "2026-10-12T10:01:00Z", "msg": "test"}\n')
+            zf.writestr("__MACOSX/._a.log", "metadata")
+
+        extracted = pipeline.expand_archive_bytes("bundle.zip", buf.getvalue())
+        assert len(extracted) == 2
+        names = [name for name, _ in extracted]
+        assert "a.log" in names
+        assert "b.jsonl" in names
+
+
+class TestTransitiveTwoHopClockSkew:
+    def test_transitive_two_hop_clock_skew(self, tmp_path):
+        from src.pipeline import ForensicPipeline
+        from src.storage.repository import InvestigationRepository
+
+        repo = InvestigationRepository(tmp_path / "data")
+        repo.create_investigation("two_hop", "Two Hop Skew", reference_source="host-a")
+        pipeline = ForensicPipeline(repo)
+
+        raw_a = (
+            b'{"timestamp": "2026-10-12T10:00:00Z", "host": "host-a", "request_id": "req-1", "message": "msg 1"}\n'
+            b'{"timestamp": "2026-10-12T10:05:00Z", "host": "host-a", "request_id": "req-2", "message": "msg 2"}\n'
+        )
+        raw_b = (
+            b'{"timestamp": "2026-10-12T10:01:00Z", "host": "host-b", "request_id": "req-1", "message": "msg 1b"}\n'
+            b'{"timestamp": "2026-10-12T10:06:00Z", "host": "host-b", "request_id": "req-2", "message": "msg 2b"}\n'
+            b'{"timestamp": "2026-10-12T10:10:00Z", "host": "host-b", "session_id": "sess-1", "message": "sess 1b"}\n'
+            b'{"timestamp": "2026-10-12T10:15:00Z", "host": "host-b", "session_id": "sess-2", "message": "sess 2b"}\n'
+        )
+        raw_c = (
+            b'{"timestamp": "2026-10-12T10:12:00Z", "host": "host-c", "session_id": "sess-1", "message": "sess 1c"}\n'
+            b'{"timestamp": "2026-10-12T10:17:00Z", "host": "host-c", "session_id": "sess-2", "message": "sess 2c"}\n'
+        )
+
+        pipeline.ingest_evidence_bytes("two_hop", "a.jsonl", raw_a, explicit_format="jsonl")
+        pipeline.ingest_evidence_bytes("two_hop", "b.jsonl", raw_b, explicit_format="jsonl")
+        pipeline.ingest_evidence_bytes("two_hop", "c.jsonl", raw_c, explicit_format="jsonl")
+
+        analysis = pipeline.analyze_investigation("two_hop", reference_source="host-a")
+        skews = analysis["skew_estimates"]
+        assert "host-b" in skews
+        assert skews["host-b"].estimated_offset_sec == 60.0
+        assert "host-c" in skews
+        assert skews["host-c"].status == "ESTIMATED"
+        assert skews["host-c"].estimated_offset_sec == 180.0
+        assert "Transitive 2-hop" in skews["host-c"].estimation_method
+
+
+class TestCQLCommaOrAndTimeBounds:
+    def test_cql_comma_or_and_time_bounds(self):
+        from src.timeline.search import FilterCriteria, TimelineSearchEngine
+
+        ev1 = Event.create(
+            investigation_id="cql_test",
+            evidence_id="ev_01",
+            original_filename="test.log",
+            line_number=1,
+            raw_text="critical failure",
+            original_timestamp_str="2026-10-12T10:01:00Z",
+            normalized_utc_iso="2026-10-12T10:01:00.000000Z",
+            source_host="web-01",
+            severity="CRITICAL",
+        )
+        ev2 = Event.create(
+            investigation_id="cql_test",
+            evidence_id="ev_02",
+            original_filename="test.log",
+            line_number=2,
+            raw_text="auth fail",
+            original_timestamp_str="2026-10-12T10:05:00Z",
+            normalized_utc_iso="2026-10-12T10:05:00.000000Z",
+            source_host="db-01",
+            severity="AUTH_FAIL",
+        )
+        ev3 = Event.create(
+            investigation_id="cql_test",
+            evidence_id="ev_03",
+            original_filename="test.log",
+            line_number=3,
+            raw_text="normal info",
+            original_timestamp_str="2026-10-12T10:10:00Z",
+            normalized_utc_iso="2026-10-12T10:10:00.000000Z",
+            source_host="web-01",
+            severity="INFO",
+        )
+
+        events = [ev1, ev2, ev3]
+
+        # Comma OR matching
+        res_or = TimelineSearchEngine.filter_events(events, FilterCriteria(keyword="severity:CRITICAL,AUTH_FAIL"))
+        assert res_or.filtered_events == 2
+
+        # Comma OR with after: bound
+        res_time = TimelineSearchEngine.filter_events(
+            events, FilterCriteria(keyword="severity:CRITICAL,AUTH_FAIL after:2026-10-12T10:02:00Z")
+        )
+        assert res_time.filtered_events == 1
+        assert res_time.events[0].event_id == ev2.event_id
+
+
+class TestO1GetEventById:
+    def test_o1_get_event_by_id(self, tmp_path):
+        from src.storage.repository import InvestigationRepository
+
+        repo = InvestigationRepository(tmp_path / "data")
+        repo.create_investigation("o1_inv", "O1 Test")
+
+        ev = Event.create(
+            investigation_id="o1_inv",
+            evidence_id="ev_01",
+            original_filename="test.log",
+            line_number=1,
+            raw_text="line 1",
+            original_timestamp_str="2026-10-12T10:00:00Z",
+            source_host="srv-01",
+        )
+        repo.save_events("o1_inv", [ev])
+
+        found = repo.db.get_event_by_id("o1_inv", ev.event_id)
+        assert found is not None
+        assert found.event_id == ev.event_id
+        assert found.source_host == "srv-01"
+
+        missing = repo.db.get_event_by_id("o1_inv", "non_existent_id")
+        assert missing is None
+
 

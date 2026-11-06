@@ -30,10 +30,10 @@ def export_investigation_json(
         coverage_stats = ParsingCoverageStats(
             total_records_encountered=len(events),
             successfully_parsed_records=len(events),
-            malformed_or_failed_records=0,
-            timestamp_usable_records=len(events),
-            parsing_success_rate=100.0,
-            timestamp_usability_rate=100.0,
+            failed_records=0,
+            records_with_usable_timestamps=len(events),
+            records_requiring_assumptions=0,
+            unresolved_records=0,
         )
     data: Dict[str, Any] = {
         "export_metadata": {

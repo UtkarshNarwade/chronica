@@ -215,6 +215,50 @@ class DatabaseManager:
                 events.append(ev)
             return events
 
+    def get_event_by_id(self, investigation_id: str, event_id: str) -> Optional[Event]:
+        """Fetch a single event by investigation_id and event_id in O(1) index time."""
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT * FROM events WHERE investigation_id = ? AND event_id = ? LIMIT 1",
+                (investigation_id, event_id),
+            )
+            r = cur.fetchone()
+            if not r:
+                return None
+            return Event(
+                event_id=r["event_id"],
+                investigation_id=r["investigation_id"],
+                evidence_id=r["evidence_id"],
+                original_filename=r["original_filename"],
+                line_number=r["line_number"],
+                raw_text=r["raw_text"],
+                original_timestamp_str=r["original_timestamp_str"],
+                parsed_dt_iso=r["parsed_dt_iso"],
+                normalized_utc_iso=r["normalized_utc_iso"],
+                corrected_utc_iso=r["corrected_utc_iso"],
+                normalization_status=r["normalization_status"],
+                timezone_assumed=r["timezone_assumed"],
+                year_inferred=bool(r["year_inferred"]),
+                estimated_clock_offset_sec=r["estimated_clock_offset_sec"],
+                correction_uncertainty_sec=r["correction_uncertainty_sec"],
+                correction_status=r["correction_status"],
+                source_host=r["source_host"],
+                source_app=r["source_app"],
+                severity=r["severity"],
+                category=r["category"],
+                username=r["username"],
+                src_ip=r["src_ip"],
+                dst_ip=r["dst_ip"],
+                description=r["description"],
+                request_id=r["request_id"],
+                session_id=r["session_id"],
+                parsing_status=r["parsing_status"],
+                data_quality_warnings=json.loads(r["warnings_json"] or "[]"),
+                provenance=json.loads(r["provenance_json"] or "{}"),
+                extra_fields=json.loads(r["extra_fields_json"] or "{}"),
+            )
+
     def delete_investigation_events(self, investigation_id: str) -> None:
         """Delete all events associated with an investigation."""
         with self._get_connection() as conn:

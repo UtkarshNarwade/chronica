@@ -8,6 +8,7 @@ Dark Slate Left Navigation Rail (#111622) + Crisp Analytical Light Canvas (#F4F6
 
 from __future__ import annotations
 
+import html as html_lib
 import io
 import json
 import os
@@ -707,8 +708,11 @@ with appbar_c1:
         else f'<span class="ch-pill-err">Audit Chain Broken</span>'
     )
     ref_label = active_inv.reference_source or "Auto"
+    esc_inv_title = html_lib.escape(str(active_inv.title))
+    esc_inv_id = html_lib.escape(str(active_inv.investigation_id))
+    esc_ref_label = html_lib.escape(str(ref_label))
     skew_pill = (
-        f'<span class="ch-pill-info">Clock-Skew: Active ({ref_label} | ±{st.session_state.latency_tolerance_sec:.1f}s)</span>'
+        f'<span class="ch-pill-info">Clock-Skew: Active ({esc_ref_label} | ±{st.session_state.latency_tolerance_sec:.1f}s)</span>'
         if st.session_state.clock_skew_enabled
         else '<span class="ch-pill-warn">Clock-Skew: Bypassed</span>'
     )
@@ -717,7 +721,7 @@ with appbar_c1:
         <div class="ch-appbar">
             <div>
                 <span class="ch-appbar-brand">CHRONICA PLATFORM</span>
-                <span class="ch-appbar-crumb">/ {nav_section.upper()} &nbsp;|&nbsp; Case: <strong>{active_inv.title}</strong> [<code>{active_inv.investigation_id}</code>]</span>
+                <span class="ch-appbar-crumb">/ {nav_section.upper()} &nbsp;|&nbsp; Case: <strong>{esc_inv_title}</strong> [<code>{esc_inv_id}</code>]</span>
             </div>
             <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
                 {integ_pill}
@@ -830,30 +834,37 @@ if nav_section == "Security Overview":
 
     # 7-Stage ATT&CK Tactic Matrix Strip
     tactic_defs = [
-        ("Initial Access", ["Initial Access", "TA0001", "login", "ssh"]),
-        ("Execution", ["Execution", "TA0002", "exec", "cmd", "powershell"]),
-        ("Persistence", ["Persistence", "TA0003", "cron", "service", "systemd"]),
-        ("Privilege Escalation", ["Privilege Escalation", "TA0004", "sudo", "shadow", "setuid"]),
-        ("Defense Evasion", ["Defense Evasion", "TA0005", "tamper", "1102", "4616"]),
-        ("Credential Access", ["Credential Access", "TA0006", "auth_fail", "brute", "password"]),
-        ("Lateral Movement", ["Lateral Movement", "TA0008", "psexec", "smb", "rdp"]),
+        ("Initial Access", ["Initial Access", "TA0001"], ["unauthorized", "login", "ssh"]),
+        ("Execution", ["Execution", "TA0002"], ["exec", "powershell", "cmd.exe", "/bin/sh", "/bin/bash"]),
+        ("Persistence", ["Persistence", "TA0003"], ["cron", "service", "systemd", "registry", "scheduled"]),
+        ("Privilege Escalation", ["Privilege Escalation", "TA0004"], ["sudo", "shadow", "setuid", "runas"]),
+        ("Defense Evasion", ["Defense Evasion", "TA0005"], ["tamper", "1102", "4616", "clear", "deleted"]),
+        ("Credential Access", ["Credential Access", "TA0006"], ["auth_fail", "brute", "dump", "shadow"]),
+        ("Lateral Movement", ["Lateral Movement", "TA0008"], ["psexec", "smb", "rdp", "remote"]),
     ]
 
     tac_cols = st.columns(7)
-    for t_idx, (t_name, t_kws) in enumerate(tactic_defs):
-        m_count = 0
-        for ev in events:
-            ev_tags = [str(t).lower() for t in ev.extra_fields.get("tags", [])]
-            ev_desc = (ev.description or "").lower()
-            ev_raw = (ev.raw_text or "").lower()
-            if any(kw.lower() in ev_tags for kw in t_kws):
-                m_count += 1
-            elif any(kw.lower() in ev_desc or kw.lower() in ev_raw for kw in t_kws if len(kw) > 3):
-                m_count += 1
+    for t_idx, (t_name, t_tags, t_indicators) in enumerate(tactic_defs):
+        counted_eids: Set[str] = set()
         for lead in heuristic_leads:
             l_tactic = (getattr(lead, "mitre_tactic", "") or "").lower()
-            if any(kw.lower() in l_tactic for kw in t_kws):
-                m_count += len(getattr(lead, "involved_event_ids", [])) or 1
+            if any(tag.lower() in l_tactic for tag in t_tags):
+                counted_eids.update(getattr(lead, "involved_event_ids", []))
+
+        for ev in events:
+            if ev.event_id in counted_eids:
+                continue
+            ev_tags = [str(t).lower() for t in ev.extra_fields.get("tags", [])]
+            if any(tag.lower() in ev_tags for tag in t_tags):
+                counted_eids.add(ev.event_id)
+                continue
+            if ev.severity in ("AUTH_FAIL", "WARNING", "ERROR", "CRITICAL"):
+                ev_desc = (ev.description or "").lower()
+                ev_raw = (ev.raw_text or "").lower()
+                if any(ind.lower() in ev_desc or ind.lower() in ev_raw for ind in t_indicators):
+                    counted_eids.add(ev.event_id)
+
+        m_count = len(counted_eids)
 
         bg_color = "#FEF2F2" if m_count > 5 else ("#FFFBEB" if m_count > 0 else "#FFFFFF")
         border_color = "#F87171" if m_count > 5 else ("#FBBF24" if m_count > 0 else "#E2E8F0")
@@ -995,21 +1006,29 @@ if nav_section == "Security Overview":
         )
         if heuristic_leads:
             for lead in heuristic_leads:
-                tactic_badge = f'<span class="ch-pill-info">{lead.mitre_tactic}</span>'
-                sev_badge = f'<span class="ch-pill-err">{lead.severity}</span>'
+                esc_tactic = html_lib.escape(str(lead.mitre_tactic or ""))
+                esc_sev = html_lib.escape(str(lead.severity or ""))
+                esc_title = html_lib.escape(str(lead.title or ""))
+                esc_rule = html_lib.escape(str(lead.rule_name or ""))
+                esc_expl = html_lib.escape(str(lead.explanation or ""))
+                esc_hosts = html_lib.escape(", ".join(str(h) for h in lead.hosts))
+                esc_span = html_lib.escape(str(lead.time_span_utc or ""))
+
+                tactic_badge = f'<span class="ch-pill-info">{esc_tactic}</span>'
+                sev_badge = f'<span class="ch-pill-err">{esc_sev}</span>'
                 st.markdown(
                     f"""
                     <div style="background: #FFFFFF; border: 1px solid #DCE3EC; border-radius: 4px; padding: 10px; margin-bottom: 8px;">
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
                             <div>
                                 {tactic_badge} {sev_badge}
-                                <strong style="margin-left: 8px; color: #0F172A; font-size: 13px;">{lead.title}</strong>
+                                <strong style="margin-left: 8px; color: #0F172A; font-size: 13px;">{esc_title}</strong>
                             </div>
-                            <span class="ch-field-tag">{lead.rule_name}</span>
+                            <span class="ch-field-tag">{esc_rule}</span>
                         </div>
-                        <div style="font-size: 12px; color: #475569; margin: 4px 0;">{lead.explanation}</div>
+                        <div style="font-size: 12px; color: #475569; margin: 4px 0;">{esc_expl}</div>
                         <div style="font-size: 11px; color: #64748B;">
-                            Hosts: <code>{", ".join(lead.hosts)}</code> | Time: <code>{lead.time_span_utc}</code>
+                            Hosts: <code>{esc_hosts}</code> | Time: <code>{esc_span}</code>
                         </div>
                     </div>
                     """,
@@ -1241,10 +1260,22 @@ elif nav_section == "Event Discovery & Timeline":
 
             df_table = pd.DataFrame(table_rows)
 
+            display_df = df_table
+            start_row_offset = 0
+            if len(df_table) > 100:
+                p_c1, p_c2 = st.columns([1, 3])
+                with p_c1:
+                    page_size = st.selectbox("Page Size", options=[100, 250, 500], index=0, key="tb_page_size")
+                total_pages = max(1, (len(df_table) + page_size - 1) // page_size)
+                with p_c2:
+                    page_num = st.number_input("Page #", min_value=1, max_value=total_pages, value=1, step=1, key="tb_page_num")
+                start_row_offset = (page_num - 1) * page_size
+                display_df = df_table.iloc[start_row_offset : start_row_offset + page_size]
+
             selected_row_indices = []
             try:
                 df_event = st.dataframe(
-                    df_table,
+                    display_df,
                     use_container_width=True,
                     hide_index=True,
                     selection_mode="single-row",
@@ -1255,12 +1286,12 @@ elif nav_section == "Event Discovery & Timeline":
                     selected_row_indices = df_event.selection.rows or []
             except (TypeError, Exception):
                 try:
-                    st.dataframe(df_table, use_container_width=True, hide_index=True, key="tb_events_df_fallback")
+                    st.dataframe(display_df, use_container_width=True, hide_index=True, key="tb_events_df_fallback")
                 except Exception:
                     pass
 
             if selected_row_indices and len(selected_row_indices) > 0:
-                s_idx = selected_row_indices[0]
+                s_idx = start_row_offset + selected_row_indices[0]
                 if 0 <= s_idx < len(sorted_events):
                     st.session_state.selected_event_id = sorted_events[s_idx].event_id
 
@@ -1469,7 +1500,7 @@ elif nav_section == "Threat Hunting & Topology":
         pills.append("pinned: true")
 
     if pills:
-        chips_html = " ".join(f"<span class='ch-filter-chip'>{p}</span>" for p in pills)
+        chips_html = " ".join(f"<span class='ch-filter-chip'>{html_lib.escape(str(p))}</span>" for p in pills)
         st.markdown(f"<div style='margin-bottom: 8px;'>{chips_html}</div>", unsafe_allow_html=True)
 
     tab_graph, tab_results = st.tabs([
@@ -1488,12 +1519,17 @@ elif nav_section == "Threat Hunting & Topology":
                 c_val = getattr(c, "common_value", getattr(c, "cluster_id", ""))
                 c_srcs = getattr(c, "sources_involved", getattr(c, "hosts_involved", []))
                 c_cnt = len(getattr(c, "event_ids", [])) or getattr(c, "event_count", 0)
+
+                esc_c_type = html_lib.escape(str(c.cluster_type or ""))
+                esc_c_val = html_lib.escape(str(c_val or ""))
+                esc_c_srcs = html_lib.escape(", ".join(str(s) for s in c_srcs))
+
                 st.markdown(
                     f"""
                     <div style="background: #FFFFFF; border: 1px solid #DCE3EC; border-radius: 4px; padding: 8px 12px; margin-bottom: 6px;">
-                        <span class="ch-pill-info">{c.cluster_type}</span>
-                        <strong style="margin-left: 8px; font-size: 12px;">Key: <code>{c_val}</code></strong>
-                        <span style="font-size: 11px; color: #64748B; margin-left: 12px;">Hosts: <code>{", ".join(c_srcs)}</code></span>
+                        <span class="ch-pill-info">{esc_c_type}</span>
+                        <strong style="margin-left: 8px; font-size: 12px;">Key: <code>{esc_c_val}</code></strong>
+                        <span style="font-size: 11px; color: #64748B; margin-left: 12px;">Hosts: <code>{esc_c_srcs}</code></span>
                         <span style="font-size: 11px; color: #64748B; margin-left: 12px;">Events: {c_cnt}</span>
                     </div>
                     """,
@@ -1512,7 +1548,18 @@ elif nav_section == "Threat Hunting & Topology":
                     "IP": e.src_ip or "-",
                     "Description": e.description[:80],
                 })
-            st.dataframe(pd.DataFrame(f_rows), use_container_width=True, hide_index=True)
+            df_filtered = pd.DataFrame(f_rows)
+            display_filtered_df = df_filtered
+            if len(df_filtered) > 100:
+                th_c1, th_c2 = st.columns([1, 3])
+                with th_c1:
+                    th_page_size = st.selectbox("Page Size", options=[100, 250, 500], index=0, key="th_page_size")
+                th_total_pages = max(1, (len(df_filtered) + th_page_size - 1) // th_page_size)
+                with th_c2:
+                    th_page_num = st.number_input("Page #", min_value=1, max_value=th_total_pages, value=1, step=1, key="th_page_num")
+                th_start = (th_page_num - 1) * th_page_size
+                display_filtered_df = df_filtered.iloc[th_start : th_start + th_page_size]
+            st.dataframe(display_filtered_df, use_container_width=True, hide_index=True)
 
             # Instant Filtered Export buttons
             e_c1, e_c2, e_c3 = st.columns(3)
@@ -1619,7 +1666,10 @@ elif nav_section == "Evidence Integrity & Ledger":
                     p = repo.get_evidence_file_path(active_inv.investigation_id, target_ent.evidence_id)
                     if p and p.exists():
                         try:
-                            bak_path = p.parent / f"tamper_backup_{target_ent.evidence_id}.bak"
+                            bak_path = p.parent.parent / f"tamper_backup_{target_ent.evidence_id}.bak"
+                            legacy_bak = p.parent / f"tamper_backup_{target_ent.evidence_id}.bak"
+                            if not bak_path.exists() and legacy_bak.exists():
+                                bak_path = legacy_bak
                             p.chmod(stat.S_IWRITE)
                             original_bytes = p.read_bytes()
                             if not bak_path.exists():
@@ -1645,7 +1695,10 @@ elif nav_section == "Evidence Integrity & Ledger":
                     p = repo.get_evidence_file_path(active_inv.investigation_id, target_ent.evidence_id)
                     if p and p.exists():
                         try:
-                            bak_path = p.parent / f"tamper_backup_{target_ent.evidence_id}.bak"
+                            bak_path = p.parent.parent / f"tamper_backup_{target_ent.evidence_id}.bak"
+                            legacy_bak = p.parent / f"tamper_backup_{target_ent.evidence_id}.bak"
+                            if not bak_path.exists() and legacy_bak.exists():
+                                bak_path = legacy_bak
                             p.chmod(stat.S_IWRITE)
                             if bak_path.exists():
                                 clean_bytes = bak_path.read_bytes()
@@ -1682,9 +1735,9 @@ elif nav_section == "Log Acquisition & Parsers":
     up_c1, up_c2 = st.columns([2, 1])
     with up_c1:
         uploaded_files = st.file_uploader(
-            "Upload Evidence Log Files (.log, .txt, .json, .jsonl, .csv, .audit, .gz, .zip)",
+            "Upload Evidence Log Files (.log, .txt, .json, .jsonl, .csv, .audit, .gz, .zip, .tgz)",
             accept_multiple_files=True,
-            type=["log", "txt", "json", "jsonl", "csv", "audit", "gz", "zip"],
+            type=["log", "txt", "json", "jsonl", "csv", "audit", "gz", "zip", "tgz"],
             key="ch_log_uploader",
         )
     with up_c2:
@@ -1752,20 +1805,37 @@ elif nav_section == "Log Acquisition & Parsers":
 
         if st.button("Ingest, Hash & Parse Evidence", type="primary", key="ingest_execute_btn"):
             prog = st.progress(0)
-            total_files = len(uploaded_files)
-            for idx, uf in enumerate(uploaded_files):
-                pipeline.ingest_evidence_bytes(
+            expanded_items: List[Tuple[str, bytes]] = []
+            for uf in uploaded_files:
+                members = pipeline.expand_archive_bytes(uf.name, uf.getvalue())
+                expanded_items.extend(members)
+
+            total_items = max(1, len(expanded_items))
+            processed_count = 0
+            duplicates_skipped = 0
+
+            for idx, (m_name, m_data) in enumerate(expanded_items):
+                pe, evs = pipeline.ingest_evidence_bytes(
                     investigation_id=active_inv.investigation_id,
-                    filename=uf.name,
-                    data=uf.getvalue(),
+                    filename=m_name,
+                    data=m_data,
                     explicit_format=None if sel_parser == "autodetect" else sel_parser,
                     assigned_timezone=assigned_tz,
                     custom_regex=custom_rx if sel_parser == "custom_regex" else None,
                 )
-                prog.progress((idx + 1) / total_files)
+                if len(evs) == 0:
+                    duplicates_skipped += 1
+                else:
+                    processed_count += 1
+                prog.progress((idx + 1) / total_items)
+
             if "pipeline_cache" in st.session_state:
                 del st.session_state["pipeline_cache"]
-            st.success(f"Successfully processed and preserved {total_files} evidence file(s).")
+
+            msg = f"Successfully processed {processed_count} evidence file(s)."
+            if duplicates_skipped > 0:
+                msg += f" ({duplicates_skipped} duplicate file(s) skipped by SHA-256 invariant)."
+            st.success(msg)
             st.rerun()
 
     st.markdown("---")
@@ -2200,15 +2270,53 @@ elif nav_section == "Forensic Reports & Export":
 
         st.markdown(f"<div style='font-size: 12px; color: #475569; margin: 8px 0;'>Records in scope: <strong>{len(export_events)}</strong></div>", unsafe_allow_html=True)
 
-        pdf_bytes = export_pdf_report(
-            metadata=active_inv,
-            manifest=manifest,
-            events=export_events,
-            diagnostics=diagnostics,
-            coverage_stats=coverage_stats or ParsingCoverageStats(0, 0, 0, 0, 0, 0),
-            skew_estimates=skew_estimates,
-            integrity_summary=integrity_summary,
+        export_cache_key = (
+            active_inv.investigation_id,
+            getattr(active_inv, "updated_at_utc", ""),
+            export_scope,
+            len(export_events),
+            len(chain_entries),
         )
+        if "export_cache" not in st.session_state:
+            st.session_state["export_cache"] = {}
+
+        if st.session_state["export_cache"].get("key") == export_cache_key:
+            pdf_bytes, md_text, csv_text, json_text = st.session_state["export_cache"]["data"]
+        else:
+            effective_coverage = coverage_stats or ParsingCoverageStats(0, 0, 0, 0, 0, 0)
+            pdf_bytes = export_pdf_report(
+                metadata=active_inv,
+                manifest=manifest,
+                events=export_events,
+                diagnostics=diagnostics,
+                coverage_stats=effective_coverage,
+                skew_estimates=skew_estimates,
+                integrity_summary=integrity_summary,
+            )
+            md_text = export_markdown_report(
+                metadata=active_inv,
+                manifest=manifest,
+                events=export_events,
+                diagnostics=diagnostics,
+                coverage_stats=effective_coverage,
+                anchors=anchors,
+                skew_estimates=skew_estimates,
+                integrity_summary=integrity_summary,
+                audit_entries=chain_entries,
+            )
+            csv_text = export_timeline_csv(export_events)
+            json_text = export_investigation_json(
+                metadata=active_inv,
+                manifest=manifest,
+                events=export_events,
+                diagnostics=diagnostics,
+                coverage_stats=effective_coverage,
+            )
+            st.session_state["export_cache"] = {
+                "key": export_cache_key,
+                "data": (pdf_bytes, md_text, csv_text, json_text),
+            }
+
         st.download_button(
             "Download PDF Forensic Report",
             data=pdf_bytes,
@@ -2217,18 +2325,6 @@ elif nav_section == "Forensic Reports & Export":
             use_container_width=True,
             type="primary",
         )
-
-        md_text = export_markdown_report(
-            metadata=active_inv,
-            manifest=manifest,
-            events=export_events,
-            diagnostics=diagnostics,
-            coverage_stats=coverage_stats or ParsingCoverageStats(0, 0, 0, 0, 0, 0),
-            anchors=anchors,
-            skew_estimates=skew_estimates,
-            integrity_summary=integrity_summary,
-            audit_entries=chain_entries,
-        )
         st.download_button(
             "Download 18-Section Markdown Report",
             data=md_text,
@@ -2236,22 +2332,12 @@ elif nav_section == "Forensic Reports & Export":
             mime="text/markdown",
             use_container_width=True,
         )
-
-        csv_text = export_timeline_csv(export_events)
         st.download_button(
             "Download CSV Timeline Spreadsheet",
             data=csv_text,
             file_name=f"{active_inv.investigation_id}_timeline.csv",
             mime="text/csv",
             use_container_width=True,
-        )
-
-        json_text = export_investigation_json(
-            metadata=active_inv,
-            manifest=manifest,
-            events=export_events,
-            diagnostics=diagnostics,
-            coverage_stats=coverage_stats or ParsingCoverageStats(0, 0, 0, 0, 0, 0),
         )
         st.download_button(
             "Download Structured JSON Case Backup",

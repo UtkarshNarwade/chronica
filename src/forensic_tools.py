@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import html as html_lib
 import ipaddress
 import math
 import re
@@ -383,7 +384,7 @@ class EntityGraphBuilder:
             xs = [node_coords[name][0] for name in cat_nodes]
             ys = [node_coords[name][1] for name in cat_nodes]
             hover_text = [
-                f"<b>{cat_label}</b><br>Identifier: <code>{name}</code><br>Degree: {sum(1 for (s, d) in edges if s == name or d == name)} links"
+                f"<b>{cat_label}</b><br>Identifier: <code>{html_lib.escape(str(name))}</code><br>Degree: {sum(1 for (s, d) in edges if s == name or d == name)} links"
                 for name in cat_nodes
             ]
 

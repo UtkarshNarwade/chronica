@@ -20,6 +20,7 @@ from __future__ import annotations
 import gzip
 import io
 import re
+import tarfile
 import zipfile
 from collections import Counter
 from pathlib import Path
@@ -131,6 +132,59 @@ class ForensicPipeline:
 
         return data, filename
 
+    def expand_archive_bytes(
+        self, filename: str, data: bytes, max_bytes: Optional[int] = None
+    ) -> List[Tuple[str, bytes]]:
+        """Expand .zip, .tar.gz, or .tgz archive files into individual members.
+
+        Enforces a cumulative decompression limit (bomb guard) and ignores
+        directory entries, macOS metadata (__MACOSX/), and hidden files (starting with .).
+        """
+        limit = max_bytes or (100 * 1024 * 1024)
+        fname_lower = filename.lower()
+        extracted: List[Tuple[str, bytes]] = []
+
+        if fname_lower.endswith(".zip"):
+            cumulative_size = 0
+            with zipfile.ZipFile(io.BytesIO(data), "r") as zf:
+                for info in zf.infolist():
+                    if info.is_dir():
+                        continue
+                    clean_name = Path(info.filename).name
+                    if not clean_name or clean_name.startswith(".") or "__MACOSX" in info.filename:
+                        continue
+                    member_bytes = zf.read(info.filename)
+                    cumulative_size += len(member_bytes)
+                    if cumulative_size > limit:
+                        raise FileSizeExceededError(
+                            f"Cumulative extracted size of archive '{filename}' exceeds {limit} bytes (bomb guard)."
+                        )
+                    extracted.append((clean_name, member_bytes))
+            return extracted if extracted else [(filename, data)]
+
+        if fname_lower.endswith((".tar.gz", ".tgz")):
+            cumulative_size = 0
+            with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
+                for member in tf.getmembers():
+                    if not member.isfile():
+                        continue
+                    clean_name = Path(member.name).name
+                    if not clean_name or clean_name.startswith(".") or "__MACOSX" in member.name:
+                        continue
+                    f = tf.extractfile(member)
+                    if f is None:
+                        continue
+                    member_bytes = f.read()
+                    cumulative_size += len(member_bytes)
+                    if cumulative_size > limit:
+                        raise FileSizeExceededError(
+                            f"Cumulative extracted size of archive '{filename}' exceeds {limit} bytes (bomb guard)."
+                        )
+                    extracted.append((clean_name, member_bytes))
+            return extracted if extracted else [(filename, data)]
+
+        return [(filename, data)]
+
     def ingest_evidence_bytes(
         self,
         investigation_id: str,
@@ -142,6 +196,10 @@ class ForensicPipeline:
         custom_regex: Optional[str] = None,
     ) -> Tuple[PreservedEvidence, List[Event]]:
         """Collect, preserve, hash, parse, and normalize an evidence file provided as bytes."""
+        # Reset stateful syslog year tracker per file
+        self.normalizer.last_syslog_month = None
+        self.normalizer.current_syslog_year = self.normalizer.base_year
+
         collector = self.repo.get_evidence_collector(investigation_id)
         meta = self.repo.get_investigation(investigation_id)
         tz_to_use = assigned_timezone or (meta.assigned_timezone if meta else "UTC")
@@ -433,6 +491,68 @@ class ForensicPipeline:
             anchors.extend(src_anchors)
             estimate = skew_analyzer.estimate_skew(src_anchors, target_source=src, reference_source=ref_src)
             skew_estimates[src] = estimate
+
+        # Transitive 2-hop clock-skew synchronization (A <-> B <-> C)
+        resolved_sources = [
+            s for s, est in skew_estimates.items()
+            if est.status == "ESTIMATED" and est.estimated_offset_sec is not None
+        ]
+        unresolved_sources = [
+            s for s, est in skew_estimates.items()
+            if est.status == "INCONCLUSIVE_INSUFFICIENT_ANCHORS"
+        ]
+
+        for unres_src in unresolved_sources:
+            for inter_src in sorted(resolved_sources):
+                hop_anchors = skew_analyzer.discover_anchors(
+                    raw_events,
+                    reference_source=inter_src,
+                    target_source=unres_src,
+                    manual_anchors=[
+                        ma for ma in manual_anchor_pairs
+                        if (ma.target_source == unres_src and ma.reference_source == inter_src)
+                        or (ma.target_source == inter_src and ma.reference_source == unres_src)
+                    ],
+                )
+                hop_est = skew_analyzer.estimate_skew(
+                    hop_anchors, target_source=unres_src, reference_source=inter_src
+                )
+                if hop_est.status == "ESTIMATED" and hop_est.estimated_offset_sec is not None:
+                    inter_est = skew_estimates[inter_src]
+                    total_offset = round((inter_est.estimated_offset_sec or 0.0) + hop_est.estimated_offset_sec, 3)
+                    import math
+                    total_mad = round(math.hypot(inter_est.spread_mad_sec or 0.0, hop_est.spread_mad_sec or 0.0), 3)
+                    within_tol = bool(latency_tolerance_sec > 0 and abs(total_offset) <= latency_tolerance_sec)
+                    min_off = (
+                        round((inter_est.min_offset_sec or 0.0) + (hop_est.min_offset_sec or 0.0), 3)
+                        if inter_est.min_offset_sec is not None and hop_est.min_offset_sec is not None
+                        else None
+                    )
+                    max_off = (
+                        round((inter_est.max_offset_sec or 0.0) + (hop_est.max_offset_sec or 0.0), 3)
+                        if inter_est.max_offset_sec is not None and hop_est.max_offset_sec is not None
+                        else None
+                    )
+
+                    skew_estimates[unres_src] = ClockSkewEstimate(
+                        target_source=unres_src,
+                        reference_source=ref_src,
+                        anchor_count=hop_est.anchor_count,
+                        estimated_offset_sec=total_offset,
+                        spread_mad_sec=total_mad,
+                        min_offset_sec=min_off,
+                        max_offset_sec=max_off,
+                        estimation_method=f"Transitive 2-hop median via '{inter_src}'",
+                        status="ESTIMATED",
+                        within_latency_tolerance=within_tol,
+                        explanation=(
+                            f"Transitive 2-hop clock offset ({total_offset:+.3f}s) resolved via intermediate "
+                            f"host '{inter_src}' ({inter_est.estimated_offset_sec:+.3f}s) + '{unres_src}<->{inter_src}' "
+                            f"({hop_est.estimated_offset_sec:+.3f}s), combined MAD ±{total_mad:.3f}s."
+                        ),
+                    )
+                    anchors.extend(hop_anchors)
+                    break
 
         # 7. Apply corrections to events
         corrected_events = skew_analyzer.apply_corrections(

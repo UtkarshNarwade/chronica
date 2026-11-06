@@ -22,7 +22,7 @@
 - Real cryptographic SHA-256 hashing before parsing.
 - Byte-for-byte evidence preservation in dedicated evidence stores.
 - Automated re-verification with tamper detection.
-- Four distinct log parsers: Linux syslog/auth.log, JSON Lines, Apache/Nginx web access, CSV firewall.
+- Seven distinct log parsers: Linux syslog/auth.log, JSON Lines, Apache/Nginx web access, CSV firewall, Linux auditd, Windows Security Events, and custom named-group regular expressions.
 - Explainable format autodetection heuristic with confidence scores.
 - Robust UTC normalization with microsecond precision.
 - Inferred year tracking for yearless BSD syslog logs.

@@ -275,7 +275,7 @@ class ForensicHeuristicEngine:
                 combined = f"{ev.raw_text} {ev.description}"
                 is_large_response = False
                 # Check for large response bytes in extra_fields
-                response_bytes = ev.extra_fields.get("bytes_sent") or ev.extra_fields.get("response_size")
+                response_bytes = ev.extra_fields.get("response_bytes") or ev.extra_fields.get("bytes_sent") or ev.extra_fields.get("response_size")
                 if response_bytes:
                     try:
                         is_large_response = int(response_bytes) > 10000

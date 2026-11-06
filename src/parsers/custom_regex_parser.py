@@ -87,7 +87,7 @@ class CustomRegexParser(BaseParser):
                 warnings=["CustomRegexParser: no pattern configured. Set a named-group regex pattern."],
             )
 
-        m = self._compiled.match(line.strip())
+        m = self._compiled.match(line[:8192].strip())
         if not m:
             return ParsedRecord(
                 line_number=line_number,
@@ -165,7 +165,7 @@ class CustomRegexParser(BaseParser):
                     "error": "Pattern not compiled",
                 })
             else:
-                m = self._compiled.match(line.strip())
+                m = self._compiled.match(line[:8192].strip())
                 results.append({
                     "line": line,
                     "matched": m is not None,

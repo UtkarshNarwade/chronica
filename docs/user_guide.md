@@ -1,6 +1,6 @@
-# Chronica Investigator User Guide
+# Chronica Enterprise Investigator User Guide
 
-**Step-by-Step Triage & Investigation Manual for AIORI-3 PS-013**
+**Triage, Investigation & Digital Forensics Manual for Chronica DFIR**
 
 ---
 
@@ -10,7 +10,7 @@
 - Python 3.11+ (Python 3.14 compatible)
 - Operating System: Windows, Linux, or macOS
 
-### Launching the Application
+### Launching the Web UI
 Open a terminal in the project root directory and run:
 
 ```bash
@@ -19,66 +19,80 @@ streamlit run app.py
 
 The web dashboard will launch at `http://localhost:8501`.
 
+### Headless CLI Execution
+For automated pipelines, air-gapped forensic scripts, and headless servers:
+
+```bash
+python scripts/chronica_cli.py --case-id case_2026_leak --title "Incident Triage" --ingest /path/to/logs/ --output-dir ./output/
+```
+
 ---
 
-## 2. Typical Investigation Workflow
+## 2. Platform Architecture & Navigation Rail
 
-### Step 1: Create or Select an Investigation
-1. Navigate to **📂 Case Management** in the sidebar.
-2. Enter a unique **Case ID** (e.g., `case_2026_finance_leak`) and **Investigation Title**.
-3. Select the default **Baseline Timezone** for naive logs (e.g., `UTC` or `America/New_York`).
-4. Click **Create Case Workspace**.
+Chronica is structured around 11 enterprise modules organized into three functional groups:
 
-### Step 2: Ingest & Preserve Evidence Files
-1. Navigate to **📁 Evidence Ingestion**.
-2. Drag and drop or browse to select your log files (multi-file upload is supported).
-3. Select your parser mode:
-   - **Auto-Detect Format**: Evaluates sample lines against regex signatures and reports an explainable confidence score.
-   - **Explicit Format**: Manually assign `Syslog`, `JSONL`, `Web Access`, or `CSV Firewall`.
-4. Click **🚀 Ingest, Hash & Parse Evidence**.
-5. Chronica calculates the SHA-256 digest *before* parsing, saves a read-only copy in the case evidence directory, and updates the manifest.
+### Group 1: Operations & Hunting
+1. **Security Overview**: Executive KPI grid, 7-Stage MITRE ATT&CK Matrix strip, and behavioral threat lead cards.
+2. **Event Discovery & Timeline**: Tri-state UTC sorting, field facet filters, paginated event stream, and deep document inspector.
+3. **Threat Hunting & Topology**: CQL search expressions, IP/CIDR filtering, concentric 4-ring radial entity link graph, and cross-source correlation clusters.
+4. **Payload & IOC Analyzer**: Forensic transformation engine (Shannon entropy, Base64/Hex/URL decoding, Defang/Refang, IOC extraction).
 
-### Step 3: Verify Cryptographic Evidence Integrity
-1. Navigate to **🔒 Evidence Integrity (SHA-256)**.
-2. Review the recorded SHA-256 digests.
-3. Click **🔄 Verify All Evidence Now** to re-hash on-disk files.
-4. Green badges (`VERIFIED`) confirm zero post-collection alteration. If a file was modified or deleted, Chronica displays a red `MISMATCH` or `UNAVAILABLE` badge.
+### Group 2: Forensic Engines
+5. **Log Acquisition & Parsers**: Multi-file log, directory, and archive bundle ingestion (`.zip`, `.tar.gz`, `.tgz`), format autodetection, live regex extraction preview, and 7 native parsers.
+6. **Evidence Integrity & Ledger**: Cryptographic SHA-256 baseline verification, append-only hash-chained audit ledger, and controlled tamper simulation lab.
+7. **Clock-Skew Synchronization**: Transitive 2-hop clock offset estimation ($A \leftrightarrow B \leftrightarrow C$), MAD spread calculation, latency guardrails, timing delta waterfall chart, and manual anchor linker.
+8. **Diagnostics & Gap Taxonomy**: 9-category evidence gap taxonomy (A through I) with explicit denominators and coverage metrics.
 
-### Step 4: Explore the Chronological Timeline
-1. Navigate to **⏱️ Timeline Explorer**.
-2. Select your sorting axis:
-   - **Normalized UTC**: Chronological order based on UTC-converted timestamps.
-   - **Clock-Corrected UTC**: Chronological order adjusted for measured host clock offsets.
-   - **Original Line Sequence**: Preserves file-by-file raw capture order.
-3. Use the **Event Detail Inspector** to inspect raw lines, parsed fields, inferred years, and provenance.
+### Group 3: Reporting & System
+9. **Forensic Reports & Export**: Multi-format exports including publication-grade PDF, 18-section Markdown, CSV timeline spreadsheet, and structured JSON case backups.
+10. **Synthetic Benchmark Suite**: Automated quantitative evaluation across 3 standardized benchmark scenarios (Clean Baseline, Clock Skew, Degraded Evidence).
+11. **Workspace & System Specs**: Case workspace switcher, system environment specifications, and configuration parameters.
 
-### Step 5: Perform Multi-Faceted Search & Filtering
-1. Navigate to **🔍 Search & Filter**.
-2. Enter keyword search terms (e.g. `POST /api`, `root`, `denied`).
-3. Apply combinatorial filters by Host, User, IP, Severity, and Category.
-4. Check **Show only records with data-quality warnings** to isolate anomalous logs.
+---
 
-### Step 6: Inspect Clock-Skew Offsets & Anchor Pairs
-1. Navigate to **⏳ Clock-Skew Analysis**.
-2. Review the **Host Clock Offset Estimates** table.
-3. Check the anchor count, median offset, and MAD spread.
-4. If anchor evidence is insufficient (< 2 anchors), Chronica marks the host `INCONCLUSIVE_INSUFFICIENT_ANCHORS` rather than guessing an unscientific correction.
+## 3. Supported Log Formats & Parsers
 
-### Step 7: Review Data-Quality Gaps & Diagnostics
-1. Navigate to **⚠️ Gaps & Diagnostics**.
-2. Review parsing coverage metrics (with explicit denominators).
-3. Inspect active findings across taxonomy categories A through I:
-   - Category A: Parse failure
-   - Category C: Timestamp failure
-   - Category D: Timestamp ambiguity (assumed timezone/year)
-   - Category F: Quiet period coverage gaps
-   - Category G: Unresolved clock skew
-   - Category H: Integrity violation alerts
+Chronica features 7 native, explainable log parsers:
+1. **RFC 3164 / 5424 Syslog**: Linux `/var/log/syslog`, `/var/log/messages`, `/var/log/auth.log` with automatic Dec->Jan BSD year rollover tracking.
+2. **JSON Lines (Structured)**: CloudWatch, Suricata EVE, audit JSON streams with automatic field normalization.
+3. **Web Access Logs**: Apache / Nginx combined and common access logs with response code and byte-size tracking.
+4. **CSV Firewall Logs**: Multi-vendor CSV firewall streams with header row detection and port/action parsing.
+5. **Linux auditd Event Logs**: `/var/log/audit/audit.log` syscall and execution records with hex proctitle decoding.
+6. **Windows Security Event Logs**: Event IDs 4624 (Logon), 4625 (Failed Logon), 1102 (Log Cleared), 4616 (Time Change).
+7. **Custom Named Regex**: Investigator-defined regular expressions with named capture groups (`(?P<timestamp>...)`, `(?P<host>...)`, `(?P<user>...)`, `(?P<message>...)`).
 
-### Step 8: Export Complete Incident Reports
-1. Navigate to **📑 Reports & Export**.
-2. Choose from 4 functional download formats:
-   - **PDF Report**: Publication-grade PDF with tables, metrics, and disclaimers.
-   - **Markdown Report**: Comprehensive 17-section incident report conforming to hackathon requirements.
-   - **CSV Timeline**: Standard forensic spreadsheet for external analysis.
-   - **JSON Case**: Machine-readable case backup containing metadata, manifest, and events.
+---
+
+## 4. Typical Investigation Workflow
+
+### Step 1: Create or Select an Investigation Workspace
+1. In the left navigation rail, use the **Active Case Workspace** selector or switch cases in **Workspace & System Specs**.
+2. Select your baseline timezone for naive timestamps (e.g., `UTC` or `America/New_York`).
+
+### Step 2: Ingest & Preserve Evidence Artifacts
+1. Navigate to **Log Acquisition & Parsers**.
+2. Drag and drop log files, `.gz` compressed logs, or `.zip` / `.tar.gz` bundles.
+3. Choose **Auto-Detect Format** or assign a specific parser mode.
+4. Click **Ingest, Hash & Parse Evidence**. Chronica hashes the raw bytes, preserves the artifact, and logs the action to the audit chain.
+
+### Step 3: Cryptographic Evidence Integrity & Audit Chain
+1. Navigate to **Evidence Integrity & Ledger**.
+2. Verify SHA-256 baselines across all preserved evidence.
+3. Verify the cryptographic hash chain of `audit_chain.jsonl`.
+4. Test tamper detection using the **Controlled 1-Byte Tamper Simulation Lab**.
+
+### Step 4: Cross-Host Clock-Skew Synchronization
+1. Navigate to **Clock-Skew Synchronization**.
+2. Chronica analyzes shared anchors (request IDs, session IDs, manual links) and computes direct and transitive 2-hop clock offsets with MAD spreads.
+3. Review the **Transaction Latency Waterfall** chart and host offset estimates.
+
+### Step 5: Timeline Analysis & Threat Hunting
+1. In **Event Discovery & Timeline**, sort by **Clock-Corrected UTC** to review the true physical sequence of events.
+2. In **Threat Hunting & Topology**, use Chronica Query Language (CQL):
+   - `host:web-01,web-02 user:admin severity:CRITICAL,ERROR after:2026-10-12T10:00:00Z NOT cron`
+3. Inspect the entity link graph to discover lateral movement and cross-host attacker paths.
+
+### Step 6: Generate Multi-Format Incident Reports
+1. Navigate to **Forensic Reports & Export**.
+2. Download the verified PDF, 18-Section Markdown, CSV Timeline, or JSON Case Backup.

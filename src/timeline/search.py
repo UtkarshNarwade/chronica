@@ -20,17 +20,19 @@ from src.timeline.schema import Event
 @dataclass
 class StructuredPredicates:
     """Parsed structured tokens from a Chronica CQL query string."""
-    hosts: List[str] = field(default_factory=list)
-    users: List[str] = field(default_factory=list)
-    ips: List[str] = field(default_factory=list)
-    severities: List[str] = field(default_factory=list)
-    categories: List[str] = field(default_factory=list)
-    request_ids: List[str] = field(default_factory=list)
-    session_ids: List[str] = field(default_factory=list)
-    files: List[str] = field(default_factory=list)
-    statuses: List[str] = field(default_factory=list)
+    hosts: List[List[str]] = field(default_factory=list)
+    users: List[List[str]] = field(default_factory=list)
+    ips: List[List[str]] = field(default_factory=list)
+    severities: List[List[str]] = field(default_factory=list)
+    categories: List[List[str]] = field(default_factory=list)
+    request_ids: List[List[str]] = field(default_factory=list)
+    session_ids: List[List[str]] = field(default_factory=list)
+    files: List[List[str]] = field(default_factory=list)
+    statuses: List[List[str]] = field(default_factory=list)
     not_terms: List[str] = field(default_factory=list)
     free_terms: List[str] = field(default_factory=list)
+    after_iso: Optional[str] = None
+    before_iso: Optional[str] = None
 
     @property
     def is_structured(self) -> bool:
@@ -45,11 +47,13 @@ class StructuredPredicates:
             or self.files
             or self.statuses
             or self.not_terms
+            or self.after_iso
+            or self.before_iso
         )
 
 
 def parse_cql_query(query: str) -> StructuredPredicates:
-    """Parse structured key:value tokens and NOT modifiers from a CQL string."""
+    """Parse structured key:value tokens, comma-separated OR lists, and NOT modifiers from a CQL string."""
     preds = StructuredPredicates()
     if not query or not query.strip():
         return preds
@@ -84,25 +88,32 @@ def parse_cql_query(query: str) -> StructuredPredicates:
             val = val.strip("\"'")
             if is_not:
                 preds.not_terms.append(val.lower())
+            elif key in ("after", "since"):
+                preds.after_iso = val
+            elif key in ("before", "until"):
+                preds.before_iso = val
             else:
+                parts = [p.strip() for p in val.split(",") if p.strip()]
+                if not parts:
+                    parts = [val]
                 if key in ("host", "hostname", "source_host"):
-                    preds.hosts.append(val.lower())
+                    preds.hosts.append([p.lower() for p in parts])
                 elif key in ("user", "username", "actor"):
-                    preds.users.append(val.lower())
+                    preds.users.append([p.lower() for p in parts])
                 elif key in ("ip", "src_ip", "dst_ip"):
-                    preds.ips.append(val.lower())
+                    preds.ips.append([p.lower() for p in parts])
                 elif key in ("sev", "severity", "level"):
-                    preds.severities.append(val.upper())
+                    preds.severities.append([p.upper() for p in parts])
                 elif key in ("cat", "category"):
-                    preds.categories.append(val.upper())
+                    preds.categories.append([p.upper() for p in parts])
                 elif key in ("req", "request_id", "correlation_id"):
-                    preds.request_ids.append(val.lower())
+                    preds.request_ids.append([p.lower() for p in parts])
                 elif key in ("session", "session_id", "sess"):
-                    preds.session_ids.append(val.lower())
+                    preds.session_ids.append([p.lower() for p in parts])
                 elif key in ("file", "source", "evidence", "original_filename"):
-                    preds.files.append(val.lower())
+                    preds.files.append([p.lower() for p in parts])
                 elif key in ("status", "parsing_status", "correction_status"):
-                    preds.statuses.append(val.upper())
+                    preds.statuses.append([p.upper() for p in parts])
                 else:
                     preds.free_terms.append(token.lower())
         else:
@@ -244,54 +255,61 @@ class TimelineSearchEngine:
 
             # 1. Full-text keyword match (structured CQL predicates, regex, or substring)
             if kw_regex is not None:
-                if not kw_regex.search(text_corpus):
+                if not kw_regex.search(text_corpus[:8192]):
                     continue
             elif cql_preds and cql_preds.is_structured:
-                # Structured CQL predicates evaluation
+                # Enforce after / before time bounds
+                ev_ts = ev.corrected_utc_iso or ev.normalized_utc_iso or ""
+                if cql_preds.after_iso and (not ev_ts or ev_ts < cql_preds.after_iso):
+                    continue
+                if cql_preds.before_iso and (not ev_ts or ev_ts > cql_preds.before_iso):
+                    continue
+
+                # Structured CQL predicates evaluation (disjunction within comma-list, conjunction across keys)
                 ev_host_lower = (ev.source_host or "").lower()
-                if any(h not in ev_host_lower for h in cql_preds.hosts):
+                if any(not any(h in ev_host_lower for h in h_group) for h_group in cql_preds.hosts):
                     continue
 
                 ev_user_lower = (ev.username or "").lower()
-                if any(u not in ev_user_lower for u in cql_preds.users):
+                if any(not any(u in ev_user_lower for u in u_group) for u_group in cql_preds.users):
                     continue
 
                 ev_ips_lower = f"{ev.src_ip or ''} {ev.dst_ip or ''}".lower()
-                if any(ip not in ev_ips_lower for ip in cql_preds.ips):
+                if any(not any(ip in ev_ips_lower for ip in ip_group) for ip_group in cql_preds.ips):
                     continue
 
                 ev_sev_upper = (ev.severity or "").upper()
-                if any(s != ev_sev_upper for s in cql_preds.severities):
+                if any(not any(s == ev_sev_upper for s in s_group) for s_group in cql_preds.severities):
                     continue
 
                 ev_cat_upper = (ev.category or "").upper()
-                if any(c != ev_cat_upper for c in cql_preds.categories):
+                if any(not any(c == ev_cat_upper for c in c_group) for c_group in cql_preds.categories):
                     continue
 
                 ev_req_lower = f"{ev.request_id or ''} {ev.extra_fields.get('request_id', '')} {ev.extra_fields.get('correlation_id', '')}".lower()
-                if any(r not in ev_req_lower for r in cql_preds.request_ids):
+                if any(not any(r in ev_req_lower for r in r_group) for r_group in cql_preds.request_ids):
                     continue
 
                 ev_sess_lower = f"{ev.session_id or ''} {ev.extra_fields.get('session_id', '')} {ev.raw_text}".lower()
-                if any(s not in ev_sess_lower for s in cql_preds.session_ids):
+                if any(not any(s in ev_sess_lower for s in s_group) for s_group in cql_preds.session_ids):
                     continue
 
                 ev_file_lower = f"{ev.original_filename or ''} {ev.evidence_id or ''}".lower()
-                if any(f not in ev_file_lower for f in cql_preds.files):
+                if any(not any(f in ev_file_lower for f in f_group) for f_group in cql_preds.files):
                     continue
 
                 ev_stat_upper = f"{ev.parsing_status or ''} {ev.correction_status or ''}".upper()
-                if any(st not in ev_stat_upper for st in cql_preds.statuses):
+                if any(not any(st in ev_stat_upper for st in st_group) for st_group in cql_preds.statuses):
                     continue
 
-                tc_lower = text_corpus.lower()
+                tc_lower = text_corpus[:8192].lower()
                 if any(not_t in tc_lower for not_t in cql_preds.not_terms):
                     continue
 
                 if any(free_t not in tc_lower for free_t in cql_preds.free_terms):
                     continue
             elif kw_lower:
-                if kw_lower not in text_corpus.lower():
+                if kw_lower not in text_corpus[:8192].lower():
                     continue
 
             # 2. Exclude keyword (negative filter)

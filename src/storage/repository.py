@@ -116,6 +116,7 @@ class InvestigationRepository:
         description: str = "",
         notes: str = "",
         assigned_timezone: str = "UTC",
+        reference_source: Optional[str] = None,
     ) -> InvestigationMetadata:
         """Create a new isolated investigation container."""
         inv_dir = self._get_inv_dir(investigation_id)
@@ -135,6 +136,7 @@ class InvestigationRepository:
             last_updated_utc=now_utc,
             notes=notes,
             assigned_timezone=assigned_timezone,
+            reference_source=reference_source,
         )
 
         # Save metadata JSON
@@ -299,13 +301,7 @@ class InvestigationRepository:
 
         Returns the updated Event, or None if not found.
         """
-        events = self.load_events(investigation_id)
-        target: Optional[Event] = None
-        for ev in events:
-            if ev.event_id == event_id:
-                target = ev
-                break
-
+        target = self.db.get_event_by_id(investigation_id, event_id)
         if target is None:
             return None
 
