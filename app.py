@@ -30,7 +30,7 @@ st.set_page_config(
 )
 
 # Project imports
-from src.diagnostics.gap_analysis import DiagnosticCategory, DiagnosticSeverity
+from src.diagnostics.gap_analysis import DiagnosticCategory, DiagnosticSeverity, ParsingCoverageStats
 from src.diagnostics.heuristics import ForensicHeuristicEngine, HeuristicLead
 from src.evaluation.ground_truth import ScenarioGroundTruth
 from src.evaluation.metrics import BenchmarkEvaluator
