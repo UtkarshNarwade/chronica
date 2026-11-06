@@ -19,7 +19,7 @@ it must be explicitly chosen by the investigator.
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Union
 
 from src.parsers.base import BaseParser, ParsedRecord
 
