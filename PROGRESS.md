@@ -486,7 +486,7 @@ tests/unit/test_decoding_and_raw_text.py::test_adversarial_latin1_high_bit_chara
 ```text
 ============================ 193 passed in 10.20s =============================
 ```
-- Commit: fix(F-18): detect BOM and text encoding, warn on corrupt bytes, and preserve Windows raw text
+- Commit: 0f64c9d fix(F-18): detect BOM and text encoding, warn on corrupt bytes, and preserve Windows raw text
 - Status: DONE
 - Notes and surprises:
   Hardcoded UTF-8 decoding previously corrupted Windows exports written in UTF-16, generating NUL bytes that failed downstream parsers. Comprehensive BOM and interleaved-NUL detection enables transparent ingestion of UTF-16 and Latin-1 evidence files.
