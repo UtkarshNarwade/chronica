@@ -450,7 +450,7 @@ tests/unit/test_correlation_remediation.py::test_adversarial_corrected_time_used
 ```text
 ============================= 188 passed in 7.00s =============================
 ```
-- Commit: fix(F-17): enforce time window and neutral labeling for shared identities vs lateral movement
+- Commit: fa48387 fix(F-17): enforce time window and neutral labeling for shared identities vs lateral movement
 - Status: DONE
 - Notes and surprises:
   Unconditionally labeling any account or IP on two or more sources as "lateral movement" led to false critical alarms on standard infrastructure. Requiring an ordered hop within `lateral_movement_window_sec` using corrected time grounds correlation in verified temporal sequences.
