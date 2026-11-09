@@ -658,7 +658,7 @@ tests/unit/test_archive_bomb_remediation.py::test_adversarial_windows_backslash_
 ```text
 ============================= 221 passed in 8.00s =============================
 ```
-- Commit: pending
+- Commit: 0d90d3e fix(F-09): stream archive decompression with running byte cap, member limit, and zip-slip guard
 - Status: DONE
 - Notes and surprises:
   `zf.read(info.filename)` and `tf.extractfile(member).read()` previously loaded entire uncompressed files into RAM before checking size limits, allowing small compressed archives to cause large memory spikes. Streaming decompression in 64KB chunks allows aborting immediately upon exceeding byte boundaries, keeping memory strictly bounded under 5MB.
