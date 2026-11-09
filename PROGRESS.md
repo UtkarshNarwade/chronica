@@ -371,7 +371,7 @@ tests/unit/test_clock_skew_remediation.py::test_adversarial_insignificant_drift_
 ```text
 ============================ 176 passed in 10.19s =============================
 ```
-- Commit: fix(F-15): add uncertainty bounds, apply Theil-Sen drift, and choose reference by connectivity
+- Commit: 1c57fd0 fix(F-15): add uncertainty bounds, apply Theil-Sen drift, and choose reference by connectivity
 - Status: DONE
 - Notes and surprises:
   Raw MAD of identical offsets is mathematically 0.0, which misled investigators into believing clock synchronization had ±0.000s uncertainty. Adding `uncertainty_sec` with a resolution floor of 0.5s and sample-size penalty preserves mathematical definitions while establishing a forensically defensible confidence bound.
