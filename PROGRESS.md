@@ -166,6 +166,44 @@ tests/unit/test_clock_skew.py::test_is_anchor_eligible_adversarial PASSED [ 33%]
 - Notes and surprises:
   Eliminated false anchor discovery caused by colliding host-local auditd serial numbers across independent Linux servers. Distributed request IDs (`req-*`, `trace-*`, UUIDs) remain fully eligible for clock synchronization.
 
+### Iteration 7 | Finding: F-03 | Started: 2026-11-09T21:18:00+05:30
+- Reproduction test: `tests/unit/test_heuristics_remediation.py`
+- Failing output (real, pasted):
+```text
+FAILED tests/unit/test_heuristics_remediation.py::test_web_log_4616_bytes_does_not_trigger_tamper_lead
+AssertionError: Expected 0 tamper leads for 4616-byte HTTP response, got 1
+FAILED tests/unit/test_heuristics_remediation.py::test_privilege_escalation_requires_same_host_or_user
+AssertionError: Cross-host unlinked events must not produce privilege escalation lead, got 1
+FAILED tests/unit/test_heuristics_remediation.py::test_multiple_distinct_leads_emitted_no_early_break
+AssertionError: Expected 2 privilege escalation leads for 2 distinct users/hosts, got 1
+```
+- Change summary (files, why):
+  - `src/diagnostics/heuristics.py`: Removed `1102` and `4616` from `TAMPER_KEYWORDS` free-text regex; explicitly check parsed Windows `event_id` or `EventID` integers so web log response sizes (e.g. 4616 bytes) and ports do not trigger tampering alarms.
+  - `src/diagnostics/heuristics.py`: Restricted diagnostic escalation in tampering to `H_EVIDENCE_INTEGRITY_ISSUE`, excluding benign coverage gaps (`F_COVERAGE_GAP`).
+  - `src/diagnostics/heuristics.py`: Added `_event_effective_epoch` prioritizing `corrected_utc_iso` over `normalized_utc_iso` across all temporal window evaluations.
+  - `src/diagnostics/heuristics.py`: Scoped privilege escalation and sensitive export heuristics to require host matching or user identity linkage.
+  - `src/diagnostics/heuristics.py`: Removed premature loop `break` so all distinct qualifying leads are emitted.
+  - `src/diagnostics/heuristics.py`: Added `@property evidence_event_ids` on `HeuristicLead`.
+  - `tests/unit/test_heuristics_remediation.py`: Added reproduction and adversarial tests for tamper precision, entity scoping, corrected time windows, and corrupted timestamp robustness.
+- New test result (real, pasted):
+```text
+tests/unit/test_heuristics_remediation.py::test_web_log_4616_bytes_does_not_trigger_tamper_lead PASSED [ 16%]
+tests/unit/test_heuristics_remediation.py::test_privilege_escalation_requires_same_host_or_user PASSED [ 33%]
+tests/unit/test_heuristics_remediation.py::test_multiple_distinct_leads_emitted_no_early_break PASSED [ 50%]
+tests/unit/test_heuristics_remediation.py::test_corrected_time_used_in_heuristics PASSED [ 66%]
+tests/unit/test_heuristics_remediation.py::test_windows_event_id_string_and_int_detection PASSED [ 83%]
+tests/unit/test_heuristics_remediation.py::test_malformed_and_missing_timestamps_do_not_crash_engine PASSED [100%]
+============================== 6 passed in 0.06s ==============================
+```
+- Full suite result (real, pasted, with counts):
+```text
+============================= 146 passed in 6.95s =============================
+```
+- Commit: fix(F-03): scope heuristics by entity, use corrected time, and refine tamper detection
+- Status: DONE
+- Notes and surprises:
+  Resolved four distinct forensic heuristics flaws: (1) false CRITICAL tampering alerts on HTTP response sizes matching Windows Event IDs, (2) spurious cross-host attribution, (3) ignoring clock skew corrections during temporal sequence evaluation, and (4) premature early-break omitting valid investigative leads.
+
 ## Open questions for the human
 (only things the agent genuinely cannot decide)
 
