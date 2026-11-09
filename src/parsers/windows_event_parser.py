@@ -104,90 +104,103 @@ class WindowsEventParser(BaseParser):
             reader = csv.DictReader(io.StringIO("\n".join(all_lines)))
 
             for line_num, row in enumerate(reader, start=2):
-                # Normalize row keys
-                norm_row: Dict[str, str] = {self._normalize_key(k): (v or "") for k, v in row.items()}
-
-                # Extract EventID
-                event_id_str = (
-                    norm_row.get("eventid")
-                    or norm_row.get("id")
-                    or norm_row.get("event_id")
-                    or ""
-                )
-                try:
-                    event_id = int(re.search(r"\d+", event_id_str).group()) if re.search(r"\d+", event_id_str) else 0
-                except Exception:
-                    event_id = 0
-
-                # Extract timestamp
-                timestamp = (
-                    norm_row.get("timecreated")
-                    or norm_row.get("timestamp")
-                    or norm_row.get("time")
-                    or norm_row.get("date")
-                    or None
-                )
-
-                # Extract host
-                source_host = (
-                    norm_row.get("computer")
-                    or norm_row.get("machinename")
-                    or norm_row.get("computername")
-                    or None
-                )
-
-                # Extract username
-                username = (
-                    norm_row.get("targetusername")
-                    or norm_row.get("subjectusername")
-                    or norm_row.get("username")
-                    or None
-                )
-                if username in ("-", "N/A", ""):
-                    username = None
-
-                # Extract IP
-                src_ip = norm_row.get("ipaddress") or norm_row.get("sourceipaddress") or None
-                if src_ip in ("-", "N/A", "::1", "::"):
-                    src_ip = None
-
-                # Extract session/correlation IDs
-                session_id = norm_row.get("logonid") or norm_row.get("subjectlogonid") or None
-                request_id = norm_row.get("correlationid") or norm_row.get("activityid") or None
-
-                severity = WINDOWS_EVENT_SEVERITY_MAP.get(event_id, "INFO")
-                category = WINDOWS_EVENT_CATEGORY_MAP.get(event_id, "SYSTEM")
-                description = WINDOWS_EVENT_DESCRIPTION_MAP.get(event_id, f"Windows Event ID {event_id}")
-
-                extra_fields: Dict[str, Any] = {"event_id": event_id}
-                for k in ("logontype", "processname", "processid", "parentprocessid", "servicename"):
-                    if k in norm_row and norm_row[k] not in ("-", "N/A", ""):
-                        extra_fields[k] = norm_row[k]
-
-                # Retain true original uncorrupted line from the CSV stream (F-18)
                 orig_raw = (
                     all_lines[line_num - 1].rstrip("\r\n")
                     if (line_num - 1) < len(all_lines)
                     else (",".join(str(v) for v in row.values()) if row else "")
                 )
+                try:
+                    # Normalize row keys
+                    norm_row: Dict[str, str] = {self._normalize_key(k): (v or "") for k, v in row.items()}
 
-                records.append(ParsedRecord(
-                    line_number=line_num,
-                    raw_text=orig_raw,
-                    original_timestamp_str=timestamp,
-                    source_host=source_host,
-                    severity=severity,
-                    category=category,
-                    username=username,
-                    src_ip=src_ip,
-                    message=description,
-                    session_id=session_id,
-                    request_id=request_id,
-                    extra_fields=extra_fields,
-                    parse_status="SUCCESS",
-                ))
-        except Exception:
-            pass
+                    # Extract EventID
+                    event_id_str = (
+                        norm_row.get("eventid")
+                        or norm_row.get("id")
+                        or norm_row.get("event_id")
+                        or ""
+                    )
+                    try:
+                        event_id = int(re.search(r"\d+", event_id_str).group()) if re.search(r"\d+", event_id_str) else 0
+                    except Exception:
+                        event_id = 0
+
+                    # Extract timestamp
+                    timestamp = (
+                        norm_row.get("timecreated")
+                        or norm_row.get("timestamp")
+                        or norm_row.get("time")
+                        or norm_row.get("date")
+                        or None
+                    )
+
+                    # Extract host
+                    source_host = (
+                        norm_row.get("computer")
+                        or norm_row.get("machinename")
+                        or norm_row.get("computername")
+                        or None
+                    )
+
+                    # Extract username
+                    username = (
+                        norm_row.get("targetusername")
+                        or norm_row.get("subjectusername")
+                        or norm_row.get("username")
+                        or None
+                    )
+                    if username in ("-", "N/A", ""):
+                        username = None
+
+                    # Extract IP
+                    src_ip = norm_row.get("ipaddress") or norm_row.get("sourceipaddress") or None
+                    if src_ip in ("-", "N/A", "::1", "::"):
+                        src_ip = None
+
+                    # Extract session/correlation IDs
+                    session_id = norm_row.get("logonid") or norm_row.get("subjectlogonid") or None
+                    request_id = norm_row.get("correlationid") or norm_row.get("activityid") or None
+
+                    severity = WINDOWS_EVENT_SEVERITY_MAP.get(event_id, "INFO")
+                    category = WINDOWS_EVENT_CATEGORY_MAP.get(event_id, "SYSTEM")
+                    description = WINDOWS_EVENT_DESCRIPTION_MAP.get(event_id, f"Windows Event ID {event_id}")
+
+                    extra_fields: Dict[str, Any] = {"event_id": event_id}
+                    for k in ("logontype", "processname", "processid", "parentprocessid", "servicename"):
+                        if k in norm_row and norm_row[k] not in ("-", "N/A", ""):
+                            extra_fields[k] = norm_row[k]
+
+                    records.append(ParsedRecord(
+                        line_number=line_num,
+                        raw_text=orig_raw,
+                        original_timestamp_str=timestamp,
+                        source_host=source_host,
+                        severity=severity,
+                        category=category,
+                        username=username,
+                        src_ip=src_ip,
+                        message=description,
+                        session_id=session_id,
+                        request_id=request_id,
+                        extra_fields=extra_fields,
+                        parse_status="SUCCESS",
+                    ))
+                except Exception as row_err:
+                    records.append(ParsedRecord(
+                        line_number=line_num,
+                        raw_text=orig_raw,
+                        original_timestamp_str=None,
+                        parse_status="MALFORMED",
+                        warnings=[f"WindowsEventParser CSV row error at line {line_num}: {row_err}"],
+                    ))
+        except csv.Error as csv_err:
+            records.append(ParsedRecord(
+                line_number=2,
+                raw_text="",
+                original_timestamp_str=None,
+                parse_status="MALFORMED",
+                warnings=[f"WindowsEventParser CSV stream error: {csv_err}"],
+            ))
 
         return records
 
@@ -223,7 +236,11 @@ class WindowsEventParser(BaseParser):
                     for line_num, item in enumerate(data, start=1):
                         if not isinstance(item, dict):
                             continue
-                        event_id = int(item.get("EventID", item.get("event_id", 0)))
+                        raw_eid = item.get("EventID") if item.get("EventID") is not None else item.get("event_id")
+                        try:
+                            event_id = int(raw_eid) if raw_eid is not None else 0
+                        except (ValueError, TypeError):
+                            event_id = 0
                         timestamp = (
                             item.get("TimeCreated")
                             or item.get("Timestamp")
@@ -267,7 +284,7 @@ class WindowsEventParser(BaseParser):
                             parse_status="SUCCESS",
                         )
                     return
-            except (json.JSONDecodeError, ValueError):
+            except (json.JSONDecodeError, ValueError, TypeError):
                 pass
 
         # Try CSV

@@ -1803,20 +1803,15 @@ elif nav_section == "Log Acquisition & Parsers":
 
         if st.button("Ingest, Hash & Parse Evidence", type="primary", key="ingest_execute_btn"):
             prog = st.progress(0)
-            expanded_items: List[Tuple[str, bytes]] = []
-            for uf in uploaded_files:
-                members = pipeline.expand_archive_bytes(uf.name, uf.getvalue())
-                expanded_items.extend(members)
-
-            total_items = max(1, len(expanded_items))
+            total_items = max(1, len(uploaded_files))
             processed_count = 0
             duplicates_skipped = 0
 
-            for idx, (m_name, m_data) in enumerate(expanded_items):
+            for idx, uf in enumerate(uploaded_files):
                 pe, evs = pipeline.ingest_evidence_bytes(
                     investigation_id=active_inv.investigation_id,
-                    filename=m_name,
-                    data=m_data,
+                    filename=uf.name,
+                    data=uf.getvalue(),
                     explicit_format=None if sel_parser == "autodetect" else sel_parser,
                     assigned_timezone=assigned_tz,
                     custom_regex=custom_rx if sel_parser == "custom_regex" else None,

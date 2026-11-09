@@ -144,20 +144,18 @@ def main() -> int:
             print(f"[ERROR] Failed to read {tf}: {e}", file=sys.stderr)
             continue
 
-        expanded = pipeline.expand_archive_bytes(tf.name, raw_bytes)
-        for member_name, member_bytes in expanded:
-            pe, evs = pipeline.ingest_evidence_bytes(
-                investigation_id=args.case_id,
-                filename=member_name,
-                data=member_bytes,
-                assigned_timezone=args.timezone,
-            )
-            if len(evs) == 0:
-                total_duplicates_skipped += 1
-            else:
-                total_ingested += 1
-                total_events += len(evs)
-                print(f"  [+] Ingested '{member_name}': {len(evs)} events (SHA-256: {pe.sha256_digest[:16]}...)")
+        pe, evs = pipeline.ingest_evidence_bytes(
+            investigation_id=args.case_id,
+            filename=tf.name,
+            data=raw_bytes,
+            assigned_timezone=args.timezone,
+        )
+        if len(evs) == 0:
+            total_duplicates_skipped += 1
+        else:
+            total_ingested += 1
+            total_events += len(evs)
+            print(f"  [+] Ingested '{tf.name}': {len(evs)} events (SHA-256: {pe.sha256_digest[:16]}...)")
 
     print(f"\nIngestion Complete: {total_ingested} artifact(s) indexed ({total_events} events).")
     if total_duplicates_skipped > 0:

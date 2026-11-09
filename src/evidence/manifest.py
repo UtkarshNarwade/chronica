@@ -37,6 +37,7 @@ class EvidenceFileEntry:
     record_count: int = 0
     assigned_timezone: Optional[str] = None  # e.g., 'UTC', 'America/New_York'
     notes: str = ""
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def collection_timestamp_utc(self) -> str:
@@ -47,8 +48,10 @@ class EvidenceFileEntry:
         return self.stored_filename
 
     def to_dict(self) -> Dict[str, Any]:
-
-        return asdict(self)
+        d = asdict(self)
+        if not self.metadata:
+            d.pop("metadata", None)
+        return d
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> EvidenceFileEntry:

@@ -289,197 +289,306 @@ class ForensicPipeline:
                     )
                     return existing_preserved, []
 
-        # 1c. Cryptographically hash and preserve original bytes
-        preserved = collector.collect_from_bytes(data, original_filename=filename)
-
-        # 2. Transparent decompression (.gz / .zip) with bomb guard
-        text_data, effective_filename = self._decompress_if_needed(
-            data, filename, collector.max_file_size_bytes
-        )
-
-        # 3. Format detection and encoding resolution (F-18)
-        raw_text, encoding_used, rep_char_count = detect_and_decode_text(text_data)
-
-        # Strict \r?\n line splitting (no split on \v, \f)
-        if raw_text.endswith("\n"):
-            raw_text_for_split = raw_text[:-1]
-        elif raw_text.endswith("\r\n"):
-            raw_text_for_split = raw_text[:-2]
-        else:
-            raw_text_for_split = raw_text
-        all_lines = re.split(r"\r?\n", raw_text_for_split)
-        sample_lines = all_lines[:25]
-
-        detected_format = explicit_format
-        if not detected_format or detected_format == "autodetect":
-            det_res = self.parser_registry.detect_format(sample_lines)
-            detected_format = det_res.detected_format or "syslog"  # Fallback if inconclusive
-
-        if detected_format == "custom_regex":
-            from src.parsers.custom_regex_parser import CustomRegexParser
-            if custom_regex:
-                parser = CustomRegexParser(pattern=custom_regex)
-            else:
-                parser = self.parser_registry.get_parser("custom_regex")
-        else:
-            parser = self.parser_registry.get_parser(detected_format)
-            if not parser:
-                parser = self.parser_registry.get_parser("syslog")
-                detected_format = "syslog"
-
-        # 4. Parse records preserving line numbers (strict line iterator)
-        ingest_context = {
-            "source_host": source_host,
-            "evidence_id": preserved.evidence_id,
-            "filename": filename,
-        }
-        parsed_records = list(parser.parse_stream(iter(all_lines), context=ingest_context))
-
-        # 5. Filter out HEADER records (CSV header pollution prevention)
-        parsed_records = [pr for pr in parsed_records if pr.parse_status != "HEADER"]
-
-        # 6. Dominant host inference for MALFORMED lines
-        host_counts: Counter = Counter(
-            pr.source_host for pr in parsed_records
-            if pr.source_host is not None
-        )
-        dominant_host: Optional[str] = None
-        if host_counts:
-            dominant_host = host_counts.most_common(1)[0][0]
-
-        # 7. BSD Syslog year rollover tracking
-        last_syslog_month: Optional[int] = None
-        current_year = self.normalizer.base_year
-
-        # 8. Normalize timestamps to UTC
-        events: List[Event] = []
-        for prec in parsed_records:
-            # Host inference for MALFORMED/None source_host records
-            effective_host = prec.source_host or source_host
-            host_inferred = False
-            if effective_host is None and dominant_host is not None:
-                effective_host = dominant_host
-                host_inferred = True
-            elif effective_host is None:
-                effective_host = f"{filename} [{preserved.evidence_id[:8]}]"
-                host_inferred = True
-
-            # BSD Syslog year rollover detection
-            override_year = None
-            if prec.original_timestamp_str:
-                from src.timeline.normalization import SYSLOG_BSD_PATTERN, MONTH_MAP
-                m_syslog = SYSLOG_BSD_PATTERN.match(prec.original_timestamp_str.strip())
-                if m_syslog:
-                    month_str = m_syslog.group(1)
-                    current_month = MONTH_MAP.get(month_str.capitalize())
-                    if current_month is not None:
-                        if last_syslog_month is not None and last_syslog_month == 12 and current_month == 1:
-                            current_year += 1
-                            if not prec.warnings:
-                                prec.warnings = []
-                            prec.warnings.append(
-                                "New Year rollover (Dec -> Jan) detected in stream; year incremented."
-                            )
-                        last_syslog_month = current_month
-                        override_year = current_year
-
-            norm_res = self.normalizer.normalize(
-                raw_ts=prec.original_timestamp_str,
-                configured_timezone=tz_to_use,
-                override_year=override_year,
+        fname_lower = filename.lower()
+        if fname_lower.endswith((".zip", ".tar.gz", ".tgz")):
+            return self._ingest_archive_pipeline(
+                investigation_id=investigation_id,
+                filename=filename,
+                data=data,
+                assigned_timezone=tz_to_use,
+                allow_duplicate=allow_duplicate,
+                source_host=source_host,
+                explicit_format=explicit_format,
             )
 
-            # Combine warnings
-            all_warnings = list(prec.warnings) + list(norm_res.warnings)
-            if rep_char_count > 0:
-                all_warnings.append(
-                    f"File decoded with {encoding_used}; contains {rep_char_count} invalid byte sequence(s) "
-                    f"replaced by U+FFFD (possible data corruption)."
+        # 1c. Cryptographically hash and preserve original bytes in staging
+        preserved = collector.collect_from_bytes(data, original_filename=filename, staging=True)
+
+        try:
+            # 2. Transparent decompression (.gz) with bomb guard
+            text_data, effective_filename = self._decompress_if_needed(
+                data, filename, collector.max_file_size_bytes
+            )
+
+            # 3. Format detection and encoding resolution (F-18)
+            raw_text, encoding_used, rep_char_count = detect_and_decode_text(text_data)
+
+            # Strict \r?\n line splitting (no split on \v, \f)
+            if raw_text.endswith("\n"):
+                raw_text_for_split = raw_text[:-1]
+            elif raw_text.endswith("\r\n"):
+                raw_text_for_split = raw_text[:-2]
+            else:
+                raw_text_for_split = raw_text
+            all_lines = re.split(r"\r?\n", raw_text_for_split)
+            sample_lines = all_lines[:25]
+
+            detected_format = explicit_format
+            if not detected_format or detected_format == "autodetect":
+                det_res = self.parser_registry.detect_format(sample_lines)
+                detected_format = det_res.detected_format or "syslog"  # Fallback if inconclusive
+
+            if detected_format == "custom_regex":
+                from src.parsers.custom_regex_parser import CustomRegexParser
+                if custom_regex:
+                    parser = CustomRegexParser(pattern=custom_regex)
+                else:
+                    parser = self.parser_registry.get_parser("custom_regex")
+            else:
+                parser = self.parser_registry.get_parser(detected_format)
+                if not parser:
+                    parser = self.parser_registry.get_parser("syslog")
+                    detected_format = "syslog"
+
+            # 4. Parse records preserving line numbers (strict line iterator)
+            ingest_context = {
+                "source_host": source_host,
+                "evidence_id": preserved.evidence_id,
+                "filename": filename,
+            }
+            parsed_records = list(parser.parse_stream(iter(all_lines), context=ingest_context))
+
+            # 5. Filter out HEADER records (CSV header pollution prevention)
+            parsed_records = [pr for pr in parsed_records if pr.parse_status != "HEADER"]
+
+            # 6. Dominant host inference for MALFORMED lines
+            host_counts: Counter = Counter(
+                pr.source_host for pr in parsed_records
+                if pr.source_host is not None
+            )
+            dominant_host: Optional[str] = None
+            if host_counts:
+                dominant_host = host_counts.most_common(1)[0][0]
+
+            # 7. BSD Syslog year rollover tracking
+            last_syslog_month: Optional[int] = None
+            current_year = self.normalizer.base_year
+
+            # 8. Normalize timestamps to UTC
+            events: List[Event] = []
+            for prec in parsed_records:
+                effective_host = prec.source_host or source_host
+                host_inferred = False
+                if effective_host is None and dominant_host is not None:
+                    effective_host = dominant_host
+                    host_inferred = True
+                elif effective_host is None:
+                    effective_host = f"{filename} [{preserved.evidence_id[:8]}]"
+                    host_inferred = True
+
+                # BSD Syslog year rollover detection
+                override_year = None
+                if prec.original_timestamp_str:
+                    from src.timeline.normalization import SYSLOG_BSD_PATTERN, MONTH_MAP
+                    m_syslog = SYSLOG_BSD_PATTERN.match(prec.original_timestamp_str.strip())
+                    if m_syslog:
+                        month_str = m_syslog.group(1)
+                        current_month = MONTH_MAP.get(month_str.capitalize())
+                        if current_month is not None:
+                            if last_syslog_month is not None and last_syslog_month == 12 and current_month == 1:
+                                current_year += 1
+                                if not prec.warnings:
+                                    prec.warnings = []
+                                prec.warnings.append(
+                                    "New Year rollover (Dec -> Jan) detected in stream; year incremented."
+                                )
+                            last_syslog_month = current_month
+                            override_year = current_year
+
+                norm_res = self.normalizer.normalize(
+                    raw_ts=prec.original_timestamp_str,
+                    configured_timezone=tz_to_use,
+                    override_year=override_year,
                 )
 
-            # Build provenance
-            provenance: Dict[str, Any] = {
-                "evidence_id": preserved.evidence_id,
-                "sha256": preserved.sha256_digest,
-                "file_name": preserved.original_filename,
-                "line_number": prec.line_number,
-                "parser": parser.format_name,
-                "encoding": encoding_used,
-                "replacement_char_count": rep_char_count,
-            }
+                # Combine warnings
+                all_warnings = list(prec.warnings) + list(norm_res.warnings)
+                if rep_char_count > 0:
+                    all_warnings.append(
+                        f"File decoded with {encoding_used}; contains {rep_char_count} invalid byte sequence(s) "
+                        f"replaced by U+FFFD (possible data corruption)."
+                    )
 
-            extra_fields = dict(prec.extra_fields)
-            if host_inferred:
-                extra_fields["host_inferred_from_file"] = True
-                provenance["host_inferred_from_file"] = True
+                # Build provenance
+                provenance: Dict[str, Any] = {
+                    "evidence_id": preserved.evidence_id,
+                    "sha256": preserved.sha256_digest,
+                    "file_name": preserved.original_filename,
+                    "line_number": prec.line_number,
+                    "parser": parser.format_name,
+                    "encoding": encoding_used,
+                    "replacement_char_count": rep_char_count,
+                }
 
-            ev = Event.create(
-                investigation_id=investigation_id,
+                extra_fields = dict(prec.extra_fields)
+                if host_inferred:
+                    extra_fields["host_inferred_from_file"] = True
+                    provenance["host_inferred_from_file"] = True
+
+                ev = Event.create(
+                    investigation_id=investigation_id,
+                    evidence_id=preserved.evidence_id,
+                    original_filename=preserved.original_filename,
+                    line_number=prec.line_number,
+                    raw_text=prec.raw_text,
+                    original_timestamp_str=prec.original_timestamp_str,
+                    parsed_dt_iso=norm_res.normalized_utc_iso,
+                    normalized_utc_iso=norm_res.normalized_utc_iso,
+                    corrected_utc_iso=norm_res.normalized_utc_iso,  # Initial state prior to clock skew analysis
+                    normalization_status=norm_res.status.value,
+                    timezone_assumed=norm_res.timezone_used,
+                    year_inferred=norm_res.year_inferred,
+                    source_host=effective_host,
+                    source_app=prec.source_app,
+                    severity=prec.severity,
+                    category=prec.category,
+                    username=prec.username,
+                    src_ip=prec.src_ip,
+                    dst_ip=prec.dst_ip,
+                    description=prec.message or prec.raw_text[:80],
+                    request_id=prec.request_id,
+                    session_id=prec.session_id,
+                    parsing_status=prec.parse_status,
+                    data_quality_warnings=all_warnings,
+                    provenance=provenance,
+                    extra_fields=extra_fields,
+                )
+                events.append(ev)
+
+            # 9. Save events to database first
+            self.repo.save_events(investigation_id, events)
+
+            # 10. Atomic commit: promote staged evidence file to evidence directory
+            preserved = collector.commit_preserved(preserved)
+
+            # 11. Update and save Manifest
+            manifest = self.repo.get_manifest(investigation_id)
+            entry = EvidenceFileEntry(
                 evidence_id=preserved.evidence_id,
                 original_filename=preserved.original_filename,
-                line_number=prec.line_number,
-                raw_text=prec.raw_text,
-                original_timestamp_str=prec.original_timestamp_str,
-                parsed_dt_iso=norm_res.normalized_utc_iso,
-                normalized_utc_iso=norm_res.normalized_utc_iso,
-                corrected_utc_iso=norm_res.normalized_utc_iso,  # Initial state prior to clock skew analysis
-                normalization_status=norm_res.status.value,
-                timezone_assumed=norm_res.timezone_used,
-                year_inferred=norm_res.year_inferred,
-                source_host=effective_host,
-                source_app=prec.source_app,
-                severity=prec.severity,
-                category=prec.category,
-                username=prec.username,
-                src_ip=prec.src_ip,
-                dst_ip=prec.dst_ip,
-                description=prec.message or prec.raw_text[:80],
-                request_id=prec.request_id,
-                session_id=prec.session_id,
-                parsing_status=prec.parse_status,
-                data_quality_warnings=all_warnings,
-                provenance=provenance,
-                extra_fields=extra_fields,
+                stored_filename=preserved.stored_filename,
+                file_size_bytes=preserved.file_size_bytes,
+                sha256_digest=preserved.sha256_digest,
+                collection_time_utc=preserved.collection_time_utc,
+                hash_algorithm="sha256",
+                detected_format=detected_format,
+                selected_parser=parser.format_name,
+                ingestion_status="PARSED" if events else "EMPTY",
+                record_count=len(events),
+                assigned_timezone=tz_to_use,
             )
-            events.append(ev)
+            manifest.add_entry(entry)
+            self.repo.save_manifest(investigation_id, manifest)
 
-        # 9. Update Manifest
-        manifest = self.repo.get_manifest(investigation_id)
-        entry = EvidenceFileEntry(
-            evidence_id=preserved.evidence_id,
-            original_filename=preserved.original_filename,
-            stored_filename=preserved.stored_filename,
-            file_size_bytes=preserved.file_size_bytes,
-            sha256_digest=preserved.sha256_digest,
-            collection_time_utc=preserved.collection_time_utc,
-            hash_algorithm="sha256",
-            detected_format=detected_format,
-            selected_parser=parser.format_name,
-            ingestion_status="PARSED" if events else "EMPTY",
-            record_count=len(events),
-            assigned_timezone=tz_to_use,
-        )
-        manifest.add_entry(entry)
-        self.repo.save_manifest(investigation_id, manifest)
+            # 12. Log EVIDENCE_INGESTED audit entry
+            ledger = self.repo.get_audit_ledger(investigation_id)
+            ledger.append(
+                action="EVIDENCE_INGESTED",
+                summary=f"Evidence file '{preserved.original_filename}' ingested ({len(events)} events).",
+                details={
+                    "evidence_id": preserved.evidence_id,
+                    "sha256": preserved.sha256_digest,
+                    "manifest_sha256": manifest.calculate_manifest_digest(),
+                    "parser": parser.format_name,
+                    "record_count": len(events),
+                },
+            )
 
-        # 10. Save events to database
-        self.repo.save_events(investigation_id, events)
+            return preserved, events
+        except Exception:
+            # Atomic rollback: clean up staged files, manifest entries, and partial database state
+            collector.rollback_preserved(preserved)
+            self.repo.db.delete_evidence_events(investigation_id, preserved.evidence_id)
+            try:
+                m_rb = self.repo.get_manifest(investigation_id)
+                m_rb.entries = [e for e in m_rb.entries if e.evidence_id != preserved.evidence_id]
+                self.repo.save_manifest(investigation_id, m_rb)
+            except Exception:
+                pass
+            raise
 
-        # 11. Log EVIDENCE_INGESTED audit entry
-        ledger = self.repo.get_audit_ledger(investigation_id)
-        ledger.append(
-            action="EVIDENCE_INGESTED",
-            summary=f"Evidence file '{preserved.original_filename}' ingested ({len(events)} events).",
-            details={
-                "evidence_id": preserved.evidence_id,
-                "sha256": preserved.sha256_digest,
-                "manifest_sha256": manifest.calculate_manifest_digest(),
-                "parser": parser.format_name,
-                "record_count": len(events),
-            },
-        )
+    def _ingest_archive_pipeline(
+        self,
+        investigation_id: str,
+        filename: str,
+        data: bytes,
+        assigned_timezone: Optional[str] = None,
+        allow_duplicate: bool = False,
+        source_host: Optional[str] = None,
+        explicit_format: Optional[str] = None,
+    ) -> Tuple[PreservedEvidence, List[Event]]:
+        """Preserve original archive and ingest all extracted archive members atomically."""
+        collector = self.repo.get_evidence_collector(investigation_id)
+        archive_preserved = collector.collect_from_bytes(data, original_filename=filename, staging=True)
 
-        return preserved, events
+        try:
+            members = self.expand_archive_bytes(filename, data, collector.max_file_size_bytes)
+            member_hashes: Dict[str, str] = {}
+            all_extracted_events: List[Event] = []
+
+            for m_name, m_bytes in members:
+                m_sha = calculate_sha256_bytes(m_bytes)
+                member_hashes[m_name] = m_sha
+                _, m_events = self.ingest_evidence_bytes(
+                    investigation_id=investigation_id,
+                    filename=m_name,
+                    data=m_bytes,
+                    explicit_format=explicit_format,
+                    assigned_timezone=assigned_timezone,
+                    allow_duplicate=allow_duplicate,
+                    source_host=source_host,
+                )
+                all_extracted_events.extend(m_events)
+
+            # Promote original archive file
+            archive_preserved = collector.commit_preserved(archive_preserved)
+
+            # Update manifest with original archive entry
+            manifest = self.repo.get_manifest(investigation_id)
+            archive_entry = EvidenceFileEntry(
+                evidence_id=archive_preserved.evidence_id,
+                original_filename=filename,
+                stored_filename=archive_preserved.stored_filename,
+                file_size_bytes=archive_preserved.file_size_bytes,
+                sha256_digest=archive_preserved.sha256_digest,
+                collection_time_utc=archive_preserved.collection_time_utc,
+                hash_algorithm="sha256",
+                detected_format="archive",
+                selected_parser="archive_extractor",
+                ingestion_status="ARCHIVE",
+                record_count=len(all_extracted_events),
+                assigned_timezone=assigned_timezone,
+            )
+            archive_entry.metadata = {"member_hashes": member_hashes}
+            manifest.add_entry(archive_entry)
+            self.repo.save_manifest(investigation_id, manifest)
+
+            # Audit ledger entry
+            ledger = self.repo.get_audit_ledger(investigation_id)
+            ledger.append(
+                action="ARCHIVE_INGESTED",
+                summary=f"Archive '{filename}' ingested ({len(members)} member files, {len(all_extracted_events)} events).",
+                details={
+                    "evidence_id": archive_preserved.evidence_id,
+                    "sha256": archive_preserved.sha256_digest,
+                    "manifest_sha256": manifest.calculate_manifest_digest(),
+                    "member_count": len(members),
+                    "member_hashes": member_hashes,
+                    "record_count": len(all_extracted_events),
+                },
+            )
+
+            return archive_preserved, all_extracted_events
+        except Exception:
+            collector.rollback_preserved(archive_preserved)
+            self.repo.db.delete_evidence_events(investigation_id, archive_preserved.evidence_id)
+            try:
+                m_rb = self.repo.get_manifest(investigation_id)
+                m_rb.entries = [e for e in m_rb.entries if e.evidence_id != archive_preserved.evidence_id]
+                self.repo.save_manifest(investigation_id, m_rb)
+            except Exception:
+                pass
+            raise
 
     def analyze_investigation(
         self,

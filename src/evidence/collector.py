@@ -94,6 +94,7 @@ class EvidenceCollector:
         data: bytes,
         original_filename: str,
         custom_evidence_id: Optional[str] = None,
+        staging: bool = False,
     ) -> PreservedEvidence:
         """Collect and preserve evidence provided as raw bytes (e.g. from UI file upload)."""
         file_size = len(data)
@@ -111,17 +112,26 @@ class EvidenceCollector:
 
         # Store with evidence_id prefix to prevent collisions
         stored_filename = f"{evidence_id}_{sanitized_name}"
-        dest_path = self.evidence_dir / stored_filename
+        
+        target_dir = (self.evidence_dir.parent / ".staging") if staging else self.evidence_dir
+        target_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            target_dir.chmod(0o700)
+        except (PermissionError, OSError):
+            pass
+
+        dest_path = target_dir / stored_filename
 
         # Write pristine original bytes
         with open(dest_path, "wb") as f:
             f.write(data)
 
-        # Apply read-only permissions where platform supports it
-        try:
-            dest_path.chmod(stat.S_IREAD | stat.S_IRGRP | stat.S_IROTH)
-        except (PermissionError, OSError):
-            pass  # Non-fatal if OS doesn't support setting read-only attributes
+        # Apply read-only permissions where platform supports it (only for non-staged)
+        if not staging:
+            try:
+                dest_path.chmod(stat.S_IREAD | stat.S_IRGRP | stat.S_IROTH)
+            except (PermissionError, OSError):
+                pass
 
         collection_time_utc = datetime.now(timezone.utc).isoformat()
 
@@ -135,6 +145,47 @@ class EvidenceCollector:
             collection_time_utc=collection_time_utc,
             hash_algorithm="sha256",
         )
+
+    def commit_preserved(self, preserved: PreservedEvidence) -> PreservedEvidence:
+        """Atomically promote a staged preserved evidence file to the evidence directory."""
+        import dataclasses
+        import shutil
+        final_path = self.evidence_dir / preserved.stored_filename
+        if preserved.stored_path != final_path and preserved.stored_path.exists():
+            shutil.move(str(preserved.stored_path), str(final_path))
+        try:
+            final_path.chmod(stat.S_IREAD | stat.S_IRGRP | stat.S_IROTH)
+        except (PermissionError, OSError):
+            pass
+        staging_dir = self.evidence_dir.parent / ".staging"
+        try:
+            if staging_dir.is_dir() and not any(staging_dir.iterdir()):
+                staging_dir.rmdir()
+        except OSError:
+            pass
+        return dataclasses.replace(preserved, stored_path=final_path)
+
+    def rollback_preserved(self, preserved: PreservedEvidence) -> None:
+        """Rollback and delete a staged or partially preserved evidence file."""
+        try:
+            if preserved.stored_path.exists():
+                preserved.stored_path.chmod(stat.S_IWRITE)
+                preserved.stored_path.unlink()
+        except OSError:
+            pass
+        final_path = self.evidence_dir / preserved.stored_filename
+        try:
+            if final_path.exists():
+                final_path.chmod(stat.S_IWRITE)
+                final_path.unlink()
+        except OSError:
+            pass
+        staging_dir = self.evidence_dir.parent / ".staging"
+        try:
+            if staging_dir.is_dir() and not any(staging_dir.iterdir()):
+                staging_dir.rmdir()
+        except OSError:
+            pass
 
     def collect_from_path(
         self,

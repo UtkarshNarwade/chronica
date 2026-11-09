@@ -591,6 +591,42 @@ tests\unit\test_tamper_lab_remediation.py ...                            [100%]
 - Notes and surprises:
   The previous tamper lab flipped bytes directly on stored forensic evidence and relied on a fragile `.bak` file or reverse bit-flip to restore clean state. If an analyst clicked "Restore" without tampering, it corrupted authentic evidence. Shifting the demonstration to an ephemeral throwaway copy strictly enforces Rule 9 ("Evidence is read-only forever").
 
+### Iteration 18 | Finding: F-08 | Started: 2026-11-09T22:30:20+05:30
+- Reproduction test: `tests/unit/test_atomic_ingest_remediation.py`
+- Failing output (real, pasted):
+```text
+FAILED tests/unit/test_atomic_ingest_remediation.py::test_reproduce_windows_event_parser_int_none_crash
+TypeError: int() argument must be a string, a bytes-like object or a real number, not 'NoneType'
+FAILED tests/unit/test_atomic_ingest_remediation.py::test_reproduce_atomic_ingest_rollback_on_fault_injection
+AssertionError: Expected 0 evidence files, found [WindowsPath('.../evidence/ev_47fed7b4d03e_crash.log')]
+FAILED tests/unit/test_atomic_ingest_remediation.py::test_reproduce_archive_preserves_original_archive_and_member_hashes
+AssertionError: assert 'PARSED' == 'ARCHIVE'
+========================= 3 failed, 1 passed in 0.21s =========================
+```
+- Change summary (files, why):
+  - `src/parsers/windows_event_parser.py`: Handled null/missing event IDs safely (`int(raw_eid) if raw_eid is not None else 0`) with `(ValueError, TypeError)` exception guard, preventing unhandled `int(None)` crashes on JSON events.
+  - `src/parsers/windows_event_parser.py`: Replaced broad outer `except Exception: pass` in CSV parsing with per-line try/except error handling that emits `MALFORMED` `ParsedRecord` diagnostics with line numbers while continuing to parse subsequent valid rows.
+  - `src/evidence/collector.py`: Added staged evidence preservation via `.staging` directory, with atomic promotion (`commit_preserved`) and cleanup (`rollback_preserved`).
+  - `src/storage/database.py`: Added `delete_evidence_events(investigation_id, evidence_id)` to purge partial events if an ingest transaction rolls back.
+  - `src/pipeline.py`: Wrapped `ingest_evidence_bytes()` in an atomic transaction that stages preservation before processing, saving events and manifest entries only upon success, and rolling back files, database rows, and manifest entries upon any failure.
+  - `src/pipeline.py`: Implemented `_ingest_archive_pipeline()`: preserves and hashes the pristine original `.zip`/`.tar.gz` archive with an `ARCHIVE` manifest entry documenting all `member_hashes`, extracts members, and links all member events to the parent archive.
+  - `src/evidence/manifest.py`: Added optional `metadata` dictionary to `EvidenceFileEntry` (omitted from serialized dict when empty to maintain 100% hash compatibility with pre-existing manifests).
+  - `tests/unit/test_atomic_ingest_remediation.py`: Added comprehensive unit and adversarial tests for `int(None)` handling, CSV per-line error diagnostics, atomic rollback on fault injection (mid-ingest crash and DB failure), and archive original preservation with member hashes.
+- New test result (real, pasted):
+```text
+tests\unit\test_atomic_ingest_remediation.py ......                      [100%]
+
+============================== 6 passed in 0.23s ==============================
+```
+- Full suite result (real, pasted, with counts):
+```text
+============================= 215 passed in 7.94s =============================
+```
+- Commit: PENDING_COMMIT
+- Status: DONE
+- Notes and surprises:
+  Pre-existing manifests did not have `"metadata"` in entry JSONs. Serializing `"metadata": {}` on entries altered the calculated manifest SHA-256 digest on existing cases. Conditioning the emission of `metadata` on `bool(self.metadata)` preserved complete backward-compatible cryptographic validity.
+
 ## Open questions for the human
 (only things the agent genuinely cannot decide)
 

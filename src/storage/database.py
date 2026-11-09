@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import List, Optional, Union
 
 from src.timeline.schema import Event
 
@@ -264,4 +264,14 @@ class DatabaseManager:
         with self._get_connection() as conn:
             cur = conn.cursor()
             cur.execute("DELETE FROM events WHERE investigation_id = ?", (investigation_id,))
+            conn.commit()
+
+    def delete_evidence_events(self, investigation_id: str, evidence_id: str) -> None:
+        """Delete all events associated with a specific evidence_id."""
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "DELETE FROM events WHERE investigation_id = ? AND evidence_id = ?",
+                (investigation_id, evidence_id),
+            )
             conn.commit()
