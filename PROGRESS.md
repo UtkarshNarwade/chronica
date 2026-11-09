@@ -622,7 +622,7 @@ tests\unit\test_atomic_ingest_remediation.py ......                      [100%]
 ```text
 ============================= 215 passed in 7.94s =============================
 ```
-- Commit: PENDING_COMMIT
+- Commit: ebf4eff fix(F-08): atomic ingest transaction with staging and rollback, archive preservation, and safe Windows parsing
 - Status: DONE
 - Notes and surprises:
   Pre-existing manifests did not have `"metadata"` in entry JSONs. Serializing `"metadata": {}` on entries altered the calculated manifest SHA-256 digest on existing cases. Conditioning the emission of `metadata` on `bool(self.metadata)` preserved complete backward-compatible cryptographic validity.
