@@ -586,7 +586,7 @@ tests\unit\test_tamper_lab_remediation.py ...                            [100%]
 ```text
 ============================= 209 passed in 7.87s =============================
 ```
-- Commit: PENDING_COMMIT
+- Commit: 33c6091 fix(F-07): run tamper lab strictly on ephemeral sandbox copy leaving evidence unaltered
 - Status: DONE
 - Notes and surprises:
   The previous tamper lab flipped bytes directly on stored forensic evidence and relied on a fragile `.bak` file or reverse bit-flip to restore clean state. If an analyst clicked "Restore" without tampering, it corrupted authentic evidence. Shifting the demonstration to an ephemeral throwaway copy strictly enforces Rule 9 ("Evidence is read-only forever").
