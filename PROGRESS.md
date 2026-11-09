@@ -199,7 +199,7 @@ tests/unit/test_heuristics_remediation.py::test_malformed_and_missing_timestamps
 ```text
 ============================= 146 passed in 6.95s =============================
 ```
-- Commit: fix(F-03): scope heuristics by entity, use corrected time, and refine tamper detection
+- Commit: a4e986e fix(F-03): scope heuristics by entity, use corrected time, and refine tamper detection
 - Status: DONE
 - Notes and surprises:
   Resolved four distinct forensic heuristics flaws: (1) false CRITICAL tampering alerts on HTTP response sizes matching Windows Event IDs, (2) spurious cross-host attribution, (3) ignoring clock skew corrections during temporal sequence evaluation, and (4) premature early-break omitting valid investigative leads.
