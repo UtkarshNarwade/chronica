@@ -491,6 +491,42 @@ tests/unit/test_decoding_and_raw_text.py::test_adversarial_latin1_high_bit_chara
 - Notes and surprises:
   Hardcoded UTF-8 decoding previously corrupted Windows exports written in UTF-16, generating NUL bytes that failed downstream parsers. Comprehensive BOM and interleaved-NUL detection enables transparent ingestion of UTF-16 and Latin-1 evidence files.
 
+### Iteration 15 | Finding: F-05 | Started: 2026-11-09T22:11:30+05:30
+- Reproduction test: `tests/unit/test_audit_chain_remediation.py`
+- Failing output (real, pasted):
+```text
+FAILED tests/unit/test_audit_chain_remediation.py::test_tail_truncation_must_be_detected
+AssertionError: Truncated chain must FAIL verification!
+assert True is False
+FAILED tests/unit/test_audit_chain_remediation.py::test_whole_chain_rewrite_must_be_detected
+AssertionError: Rewritten chain must FAIL verification against anchored head!
+assert True is False
+FAILED tests/unit/test_audit_chain_remediation.py::test_corrupt_last_line_must_fail_closed_not_fork
+Failed: DID NOT RAISE Exception
+======================== 3 failed, 193 passed in 8.68s ========================
+```
+- Change summary (files, why):
+  - `src/evidence/audit_chain.py`: Implemented dual anchoring for audit chain head state (latest `seq_id` and `head_hash`) across both an external sidecar file (`audit_chain.anchor`) and SQLite database table (`audit_chain_anchor`).
+  - `src/evidence/audit_chain.py`: Updated `verify_chain()` to detect tail truncation (`total < anchor_seq_id`), whole-chain rewrites (`entry_hash != anchor_head_hash`), and ledger file deletion while anchors persist.
+  - `src/evidence/audit_chain.py`: Defined `AuditChainIntegrityError`. Made `_get_last_entry()` fail closed with `AuditChainIntegrityError` if the last line contains corrupt JSON or unparseable bytes, preventing chain forking and sequence resets to 1.
+  - `src/evidence/audit_chain.py`: Implemented cross-platform atomic filesystem lock (`_acquire_file_lock`) on `<investigation_dir>/audit_chain.lock` combined with in-process reentrant threading lock (`_LEDGER_LOCK`), ensuring serialized concurrent appends with immediate `os.fsync`.
+  - `src/storage/repository.py` & `src/pipeline.py`: Removed swallowed `try ... except Exception: pass` blocks around `ledger.append(...)`, ensuring ledger write failures fail loudly per Rule 10.
+  - `tests/unit/test_audit_chain_remediation.py`: Added comprehensive unit and adversarial tests covering tail truncation detection, whole-chain rewrite detection, corrupt last line fail-closed, multi-threaded concurrent appends, deleted ledger detection, mid-chain corrupt line detection, and loud pipeline failure on disk/permission error.
+- New test result (real, pasted):
+```text
+tests\unit\test_audit_chain_remediation.py .......                       [100%]
+
+============================== 7 passed in 0.28s ==============================
+```
+- Full suite result (real, pasted, with counts):
+```text
+============================= 200 passed in 7.78s =============================
+```
+- Commit: PENDING_COMMIT
+- Status: DONE
+- Notes and surprises:
+  Without external head anchors, any hash-chained JSONL ledger is vulnerable to tail truncation because internal hash pointers remain self-consistent. Anchoring both in a sidecar file and SQLite database closes this vulnerability and provides double-entry verification.
+
 ## Open questions for the human
 (only things the agent genuinely cannot decide)
 

@@ -466,20 +466,17 @@ class ForensicPipeline:
         self.repo.save_events(investigation_id, events)
 
         # 11. Log EVIDENCE_INGESTED audit entry
-        try:
-            ledger = self.repo.get_audit_ledger(investigation_id)
-            ledger.append(
-                action="EVIDENCE_INGESTED",
-                summary=f"Evidence file '{preserved.original_filename}' ingested ({len(events)} events).",
-                details={
-                    "evidence_id": preserved.evidence_id,
-                    "sha256": preserved.sha256_digest,
-                    "parser": parser.format_name,
-                    "record_count": len(events),
-                },
-            )
-        except Exception:
-            pass
+        ledger = self.repo.get_audit_ledger(investigation_id)
+        ledger.append(
+            action="EVIDENCE_INGESTED",
+            summary=f"Evidence file '{preserved.original_filename}' ingested ({len(events)} events).",
+            details={
+                "evidence_id": preserved.evidence_id,
+                "sha256": preserved.sha256_digest,
+                "parser": parser.format_name,
+                "record_count": len(events),
+            },
+        )
 
         return preserved, events
 

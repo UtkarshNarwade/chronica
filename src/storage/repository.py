@@ -148,15 +148,12 @@ class InvestigationRepository:
         manifest.save_to_file(inv_dir / "manifest.json")
 
         # Log CASE_CREATED audit entry
-        try:
-            ledger = self.get_audit_ledger(investigation_id)
-            ledger.append(
-                action="CASE_CREATED",
-                summary=f"Investigation '{title}' created.",
-                details={"investigation_id": investigation_id, "title": title},
-            )
-        except Exception:
-            pass  # Non-fatal: audit ledger failure doesn't block case creation
+        ledger = self.get_audit_ledger(investigation_id)
+        ledger.append(
+            action="CASE_CREATED",
+            summary=f"Investigation '{title}' created.",
+            details={"investigation_id": investigation_id, "title": title},
+        )
 
         return meta
 
@@ -273,7 +270,7 @@ class InvestigationRepository:
     def get_audit_ledger(self, investigation_id: str):
         """Get the AuditChainLedger for a specific investigation."""
         from src.evidence.audit_chain import AuditChainLedger
-        return AuditChainLedger(self._get_inv_dir(investigation_id))
+        return AuditChainLedger(self._get_inv_dir(investigation_id), db_path=self.db_path)
 
     def save_events(self, investigation_id: str, events: List[Event]) -> None:
         """Save events to the database and update investigation timestamp."""
@@ -321,21 +318,18 @@ class InvestigationRepository:
         self.db.save_events(investigation_id, [ev_clone])
 
         # Log audit entry
-        try:
-            ledger = self.get_audit_ledger(investigation_id)
-            changes: Dict[str, Any] = {"event_id": event_id}
-            if bookmarked is not None:
-                changes["bookmarked"] = bookmarked
-            if tags is not None:
-                changes["tags"] = tags
-            if analyst_note is not None:
-                changes["analyst_note_length"] = len(analyst_note)
-            ledger.append(
-                action="EVENT_ANNOTATED",
-                summary=f"Event '{event_id}' annotated.",
-                details=changes,
-            )
-        except Exception:
-            pass
+        ledger = self.get_audit_ledger(investigation_id)
+        changes: Dict[str, Any] = {"event_id": event_id}
+        if bookmarked is not None:
+            changes["bookmarked"] = bookmarked
+        if tags is not None:
+            changes["tags"] = tags
+        if analyst_note is not None:
+            changes["analyst_note_length"] = len(analyst_note)
+        ledger.append(
+            action="EVENT_ANNOTATED",
+            summary=f"Event '{event_id}' annotated.",
+            details=changes,
+        )
 
         return ev_clone
