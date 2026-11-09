@@ -79,7 +79,7 @@ tests/unit/test_packaging_and_config.py::test_dockerfile_and_streamlit_hardening
 ```text
 ============================= 133 passed in 7.80s =============================
 ```
-- Commit: pending
+- Commit: a01b1b6 fix(T0-3): add Dockerfile with non-root user and harden Streamlit air-gap config
 - Status: DONE
 - Notes and surprises:
   Streamlit configuration hardened to loopback-only binding (`127.0.0.1`), headless operation, error detail redaction, and total telemetry suppression.
