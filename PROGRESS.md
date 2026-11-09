@@ -522,7 +522,7 @@ tests\unit\test_audit_chain_remediation.py .......                       [100%]
 ```text
 ============================= 200 passed in 7.78s =============================
 ```
-- Commit: PENDING_COMMIT
+- Commit: 3324e8a fix(F-05): anchor audit chain head, fail closed on corrupt lines, lock appends, and fail loud on write errors
 - Status: DONE
 - Notes and surprises:
   Without external head anchors, any hash-chained JSONL ledger is vulnerable to tail truncation because internal hash pointers remain self-consistent. Anchoring both in a sidecar file and SQLite database closes this vulnerability and provides double-entry verification.
