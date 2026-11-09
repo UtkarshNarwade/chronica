@@ -24,7 +24,7 @@ tests/unit/test_packaging_and_config.py::test_src_package_importability PASSED [
 ```text
 ============================= 130 passed in 6.34s =============================
 ```
-- Commit: pending
+- Commit: 25c840b fix(T0-1): add pyproject.toml, dev requirements, and ruff/mypy configs
 - Status: DONE
 - Notes and surprises:
   `pip install -e .[dev]` successfully built and installed editable chronica wheel. Mypy on Windows has an AppLocker/Application Control block for its C-extension DLL locally, but ruff runs cleanly and mypy config is established in pyproject.toml for CI.
