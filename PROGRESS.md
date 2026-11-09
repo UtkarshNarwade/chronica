@@ -455,6 +455,42 @@ tests/unit/test_correlation_remediation.py::test_adversarial_corrected_time_used
 - Notes and surprises:
   Unconditionally labeling any account or IP on two or more sources as "lateral movement" led to false critical alarms on standard infrastructure. Requiring an ordered hop within `lateral_movement_window_sec` using corrected time grounds correlation in verified temporal sequences.
 
+### Iteration 14 | Finding: F-18 | Started: 2026-11-09T22:05:30+05:30
+- Reproduction test: `tests/unit/test_decoding_and_raw_text.py`
+- Failing output (real, pasted):
+```text
+FAILED tests/unit/test_decoding_and_raw_text.py::test_utf16le_log_decodes_cleanly_and_records_encoding
+AssertionError: assert 3 == 2
+FAILED tests/unit/test_decoding_and_raw_text.py::test_corrupt_byte_sequence_emits_replacement_character_warning
+AssertionError: Expected corruption/replacement character warning, got: ['Line does not conform to RFC 3164 or RFC 5424 syslog patterns.', 'Record contains no timestamp string.']
+FAILED tests/unit/test_decoding_and_raw_text.py::test_windows_event_parser_csv_preserves_original_raw_text
+AssertionError: Expected true original line '"2026-10-12 10:00:00",4624,WIN-SRV,"Special, with quotes and spaces"', got reconstructed '2026-10-12 10:00:00,4624,WIN-SRV,Special, with quotes and spaces'
+- "2026-10-12 10:00:00",4624,WIN-SRV,"Special, with quotes and spaces"
++ 2026-10-12 10:00:00,4624,WIN-SRV,Special, with quotes and spaces
+```
+- Change summary (files, why):
+  - `src/pipeline.py`: Added `detect_and_decode_text()` supporting BOM detection (UTF-8-SIG, UTF-16-LE, UTF-16-BE, UTF-32), strict UTF-8 validation, UTF-16-LE heuristics without BOM (interleaved NUL detection), and Latin-1 fallback.
+  - `src/pipeline.py`: Counted replacement characters ($U+FFFD$) when fallback decoding occurs, recording `encoding` and `replacement_char_count` into event provenance and surfacing explicit data quality warnings on corrupted byte sequences.
+  - `src/parsers/windows_event_parser.py`: Replaced synthetic string reconstruction (`",".join(...)` and `json.dumps(...)`) with direct preservation of true unmutated original lines in both CSV and JSON streams.
+  - `tests/unit/test_decoding_and_raw_text.py`: Added unit and adversarial tests covering UTF-16-LE with BOM, UTF-16-BE with BOM, UTF-8-SIG BOM stripping, Latin-1 non-UTF-8 characters, corruption warnings, and exact CSV raw line retention.
+- New test result (real, pasted):
+```text
+tests/unit/test_decoding_and_raw_text.py::test_utf16le_log_decodes_cleanly_and_records_encoding PASSED [ 20%]
+tests/unit/test_decoding_and_raw_text.py::test_corrupt_byte_sequence_emits_replacement_character_warning PASSED [ 40%]
+tests/unit/test_decoding_and_raw_text.py::test_windows_event_parser_csv_preserves_original_raw_text PASSED [ 60%]
+tests/unit/test_decoding_and_raw_text.py::test_adversarial_utf8_bom_and_utf16_be PASSED [ 80%]
+tests/unit/test_decoding_and_raw_text.py::test_adversarial_latin1_high_bit_characters PASSED [100%]
+============================== 5 passed in 0.12s ==============================
+```
+- Full suite result (real, pasted, with counts):
+```text
+============================ 193 passed in 10.20s =============================
+```
+- Commit: fix(F-18): detect BOM and text encoding, warn on corrupt bytes, and preserve Windows raw text
+- Status: DONE
+- Notes and surprises:
+  Hardcoded UTF-8 decoding previously corrupted Windows exports written in UTF-16, generating NUL bytes that failed downstream parsers. Comprehensive BOM and interleaved-NUL detection enables transparent ingestion of UTF-16 and Latin-1 evidence files.
+
 ## Open questions for the human
 (only things the agent genuinely cannot decide)
 

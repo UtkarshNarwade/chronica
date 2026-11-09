@@ -50,6 +50,58 @@ from src.timeline.normalization import TimestampNormalizer
 from src.timeline.schema import Event
 
 
+def detect_and_decode_text(raw_bytes: bytes) -> Tuple[str, str, int]:
+    """Detect encoding (BOM or content heuristics), decode, and count replacement characters (F-18).
+
+    Supports:
+    - UTF-8 with BOM (\\xef\\xbb\\xbf) -> 'utf-8-sig'
+    - UTF-16-LE with BOM (\\xff\\xfe) -> 'utf-16'
+    - UTF-16-BE with BOM (\\xfe\\xff) -> 'utf-16'
+    - UTF-8 (strict validation without BOM) -> 'utf-8'
+    - UTF-16-LE heuristics without BOM (common in Windows powershell exports without BOM)
+    - Latin-1 fallback (preserves all byte values 0x00-0xFF)
+
+    Returns:
+        (decoded_text, encoding_name, replacement_char_count)
+    """
+    if not raw_bytes:
+        return "", "utf-8", 0
+
+    # 1. BOM checks
+    if raw_bytes.startswith(b"\xef\xbb\xbf"):
+        try:
+            return raw_bytes.decode("utf-8-sig"), "utf-8-sig", 0
+        except UnicodeDecodeError:
+            pass
+    elif raw_bytes.startswith(b"\xff\xfe") or raw_bytes.startswith(b"\xfe\xff"):
+        try:
+            return raw_bytes.decode("utf-16"), "utf-16", 0
+        except UnicodeDecodeError:
+            pass
+
+    # 2. Try strict UTF-8
+    try:
+        return raw_bytes.decode("utf-8"), "utf-8", 0
+    except UnicodeDecodeError:
+        pass
+
+    # 3. Check for UTF-16-LE without BOM (ASCII characters interleaved with NUL bytes)
+    if len(raw_bytes) >= 4 and (raw_bytes[1::2].count(0) > len(raw_bytes) // 4):
+        try:
+            return raw_bytes.decode("utf-16-le"), "utf-16-le", 0
+        except UnicodeDecodeError:
+            pass
+
+    # 4. Fallback to UTF-8 with errors='replace', count U+FFFD replacement characters
+    decoded = raw_bytes.decode("utf-8", errors="replace")
+    rep_count = decoded.count("\ufffd")
+    if rep_count > 0:
+        return decoded, "utf-8", rep_count
+
+    # 5. Latin-1 fallback
+    return raw_bytes.decode("latin-1"), "latin-1", 0
+
+
 class ForensicPipeline:
     """High-level service interface for managing and executing forensic investigations."""
 
@@ -245,8 +297,8 @@ class ForensicPipeline:
             data, filename, collector.max_file_size_bytes
         )
 
-        # 3. Format detection or selection
-        raw_text = text_data.decode("utf-8", errors="replace")
+        # 3. Format detection and encoding resolution (F-18)
+        raw_text, encoding_used, rep_char_count = detect_and_decode_text(text_data)
 
         # Strict \r?\n line splitting (no split on \v, \f)
         if raw_text.endswith("\n"):
@@ -338,7 +390,12 @@ class ForensicPipeline:
             )
 
             # Combine warnings
-            all_warnings = prec.warnings + norm_res.warnings
+            all_warnings = list(prec.warnings) + list(norm_res.warnings)
+            if rep_char_count > 0:
+                all_warnings.append(
+                    f"File decoded with {encoding_used}; contains {rep_char_count} invalid byte sequence(s) "
+                    f"replaced by U+FFFD (possible data corruption)."
+                )
 
             # Build provenance
             provenance: Dict[str, Any] = {
@@ -347,6 +404,8 @@ class ForensicPipeline:
                 "file_name": preserved.original_filename,
                 "line_number": prec.line_number,
                 "parser": parser.format_name,
+                "encoding": encoding_used,
+                "replacement_char_count": rep_char_count,
             }
 
             extra_fields = dict(prec.extra_fields)

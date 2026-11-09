@@ -102,7 +102,6 @@ class WindowsEventParser(BaseParser):
 
         try:
             reader = csv.DictReader(io.StringIO("\n".join(all_lines)))
-            headers_lower = {self._normalize_key(h): h for h in (reader.fieldnames or [])}
 
             for line_num, row in enumerate(reader, start=2):
                 # Normalize row keys
@@ -165,11 +164,16 @@ class WindowsEventParser(BaseParser):
                     if k in norm_row and norm_row[k] not in ("-", "N/A", ""):
                         extra_fields[k] = norm_row[k]
 
-                raw_text = ",".join(str(v) for v in row.values()) if row else ""
+                # Retain true original uncorrupted line from the CSV stream (F-18)
+                orig_raw = (
+                    all_lines[line_num - 1].rstrip("\r\n")
+                    if (line_num - 1) < len(all_lines)
+                    else (",".join(str(v) for v in row.values()) if row else "")
+                )
 
                 records.append(ParsedRecord(
                     line_number=line_num,
-                    raw_text=raw_text,
+                    raw_text=orig_raw,
                     original_timestamp_str=timestamp,
                     source_host=source_host,
                     severity=severity,
@@ -182,7 +186,7 @@ class WindowsEventParser(BaseParser):
                     extra_fields=extra_fields,
                     parse_status="SUCCESS",
                 ))
-        except Exception as exc:
+        except Exception:
             pass
 
         return records
@@ -242,9 +246,14 @@ class WindowsEventParser(BaseParser):
                         for k in ("LogonType", "ProcessName", "ProcessId", "ServiceName"):
                             if k in item:
                                 extra_fields[k.lower()] = item[k]
+                        orig_raw = (
+                            all_lines[line_num - 1].rstrip("\r\n")
+                            if (line_num - 1) < len(all_lines) and all_lines[line_num - 1].strip().startswith("{")
+                            else json.dumps(item)
+                        )
                         yield ParsedRecord(
                             line_number=line_num,
-                            raw_text=json.dumps(item),
+                            raw_text=orig_raw,
                             original_timestamp_str=timestamp,
                             source_host=source_host,
                             severity=severity,
