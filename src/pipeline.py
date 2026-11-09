@@ -24,22 +24,20 @@ import tarfile
 import zipfile
 from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 from src.diagnostics.gap_analysis import (
-    DiagnosticItem,
     EvidenceGapAnalyzer,
     ParsingCoverageStats,
 )
-from src.evidence.collector import EvidenceCollector, FileSizeExceededError, PreservedEvidence
-from src.evidence.manifest import EvidenceFileEntry, EvidenceManifest
+from src.evidence.collector import FileSizeExceededError, PreservedEvidence
+from src.evidence.manifest import EvidenceFileEntry
 from src.evidence.hashing import calculate_sha256_bytes
 from src.evidence.verification import (
-    InvestigationIntegritySummary,
     verify_evidence_integrity,
 )
 from src.parsers.detector import ParserRegistry
-from src.storage.repository import InvestigationMetadata, InvestigationRepository
+from src.storage.repository import InvestigationRepository
 from src.timeline.assembler import TimelineAssembler
 from src.timeline.clock_skew import (
     AnchorPair,
@@ -102,6 +100,12 @@ def detect_and_decode_text(raw_bytes: bytes) -> Tuple[str, str, int]:
     return raw_bytes.decode("latin-1"), "latin-1", 0
 
 
+# Maximum limits for archive expansion (archive bomb defense)
+MAX_ARCHIVE_MEMBERS: int = 1000
+MAX_NESTING_DEPTH: int = 3
+STREAM_CHUNK_SIZE: int = 65536
+
+
 class ForensicPipeline:
     """High-level service interface for managing and executing forensic investigations."""
 
@@ -150,33 +154,42 @@ class ForensicPipeline:
                 return decompressed, inner_name
             except FileSizeExceededError:
                 raise
-            except Exception as exc:
+            except Exception:
                 # If decompression fails, treat as plain text
                 pass
 
         if fname_lower.endswith(".zip"):
             try:
                 with zipfile.ZipFile(io.BytesIO(data), "r") as zf:
-                    names = zf.namelist()
-                    if not names:
+                    infolist = zf.infolist()
+                    if not infolist:
                         return data, filename
+                    if len(infolist) > MAX_ARCHIVE_MEMBERS:
+                        raise FileSizeExceededError(
+                            f"Archive '{filename}' contains {len(infolist)} members, exceeding "
+                            f"maximum limit of {MAX_ARCHIVE_MEMBERS} (archive bomb guard)."
+                        )
                     # Process the first non-directory file in the archive
-                    for name in names:
-                        info = zf.getinfo(name)
+                    for info in infolist:
                         if info.is_dir():
                             continue
-                        if info.file_size > max_bytes:
-                            raise FileSizeExceededError(
-                                f"Decompressed content of '{name}' in '{filename}' exceeds "
-                                f"maximum limit of {max_bytes} bytes (bomb guard)."
-                            )
-                        decompressed = zf.read(name)
-                        if len(decompressed) > max_bytes:
-                            raise FileSizeExceededError(
-                                f"Decompressed content of '{name}' in '{filename}' exceeds "
-                                f"maximum limit of {max_bytes} bytes (bomb guard)."
-                            )
-                        return decompressed, name
+                        chunks = []
+                        total = 0
+                        with zf.open(info) as zf_file:
+                            while True:
+                                chunk = zf_file.read(STREAM_CHUNK_SIZE)
+                                if not chunk:
+                                    break
+                                total += len(chunk)
+                                if total > max_bytes:
+                                    raise FileSizeExceededError(
+                                        f"Decompressed content of '{info.filename}' in '{filename}' exceeds "
+                                        f"maximum limit of {max_bytes} bytes (bomb guard)."
+                                    )
+                                chunks.append(chunk)
+                        decompressed = b"".join(chunks)
+                        clean_name = Path(info.filename.replace("\\", "/")).name
+                        return decompressed, clean_name or info.filename
             except FileSizeExceededError:
                 raise
             except Exception:
@@ -185,13 +198,23 @@ class ForensicPipeline:
         return data, filename
 
     def expand_archive_bytes(
-        self, filename: str, data: bytes, max_bytes: Optional[int] = None
+        self,
+        filename: str,
+        data: bytes,
+        max_bytes: Optional[int] = None,
+        depth: int = 1,
     ) -> List[Tuple[str, bytes]]:
         """Expand .zip, .tar.gz, or .tgz archive files into individual members.
 
-        Enforces a cumulative decompression limit (bomb guard) and ignores
-        directory entries, macOS metadata (__MACOSX/), and hidden files (starting with .).
+        Enforces a cumulative decompression limit (bomb guard), streaming chunk reads,
+        member count limit, nesting depth cap, and zip-slip path traversal prevention.
+        Ignores directory entries, macOS metadata (__MACOSX/), and hidden files (starting with .).
         """
+        if depth > MAX_NESTING_DEPTH:
+            raise FileSizeExceededError(
+                f"Archive '{filename}' exceeds maximum nesting depth of {MAX_NESTING_DEPTH} (archive bomb guard)."
+            )
+
         limit = max_bytes or (100 * 1024 * 1024)
         fname_lower = filename.lower()
         extracted: List[Tuple[str, bytes]] = []
@@ -199,45 +222,82 @@ class ForensicPipeline:
         if fname_lower.endswith(".zip"):
             cumulative_size = 0
             with zipfile.ZipFile(io.BytesIO(data), "r") as zf:
-                for info in zf.infolist():
+                infolist = zf.infolist()
+                if len(infolist) > MAX_ARCHIVE_MEMBERS:
+                    raise FileSizeExceededError(
+                        f"Archive '{filename}' contains {len(infolist)} members, exceeding "
+                        f"maximum limit of {MAX_ARCHIVE_MEMBERS} (archive bomb guard)."
+                    )
+                for info in infolist:
                     if info.is_dir():
                         continue
-                    clean_name = Path(info.filename).name
-                    if not clean_name or clean_name.startswith(".") or "__MACOSX" in info.filename:
+                    # Zip-slip guard: sanitize member path and reject directory traversal
+                    raw_name = info.filename.replace("\\", "/")
+                    clean_name = Path(raw_name).name
+                    if not clean_name or clean_name.startswith(".") or "__MACOSX" in raw_name:
                         continue
                     if clean_name in [n for n, _ in extracted]:
-                        parent_prefix = Path(info.filename).parent.name
+                        parent_prefix = Path(raw_name).parent.name
                         clean_name = f"{parent_prefix}_{clean_name}" if parent_prefix else clean_name
-                    member_bytes = zf.read(info.filename)
-                    cumulative_size += len(member_bytes)
-                    if cumulative_size > limit:
-                        raise FileSizeExceededError(
-                            f"Cumulative extracted size of archive '{filename}' exceeds {limit} bytes (bomb guard)."
-                        )
+
+                    # Stream member decompression in chunks to abort before memory allocation
+                    chunks = []
+                    member_size = 0
+                    with zf.open(info) as zf_member:
+                        while True:
+                            chunk = zf_member.read(STREAM_CHUNK_SIZE)
+                            if not chunk:
+                                break
+                            cumulative_size += len(chunk)
+                            member_size += len(chunk)
+                            if cumulative_size > limit:
+                                raise FileSizeExceededError(
+                                    f"Cumulative extracted size of archive '{filename}' exceeds {limit} bytes (bomb guard)."
+                                )
+                            chunks.append(chunk)
+                    member_bytes = b"".join(chunks)
                     extracted.append((clean_name, member_bytes))
             return extracted if extracted else [(filename, data)]
 
         if fname_lower.endswith((".tar.gz", ".tgz")):
             cumulative_size = 0
             with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
-                for member in tf.getmembers():
+                members = tf.getmembers()
+                if len(members) > MAX_ARCHIVE_MEMBERS:
+                    raise FileSizeExceededError(
+                        f"Archive '{filename}' contains {len(members)} members, exceeding "
+                        f"maximum limit of {MAX_ARCHIVE_MEMBERS} (archive bomb guard)."
+                    )
+                for member in members:
                     if not member.isfile():
                         continue
-                    clean_name = Path(member.name).name
-                    if not clean_name or clean_name.startswith(".") or "__MACOSX" in member.name:
+                    # Zip-slip guard: sanitize member path and reject directory traversal
+                    raw_name = member.name.replace("\\", "/")
+                    clean_name = Path(raw_name).name
+                    if not clean_name or clean_name.startswith(".") or "__MACOSX" in raw_name:
                         continue
                     if clean_name in [n for n, _ in extracted]:
-                        parent_prefix = Path(member.name).parent.name
+                        parent_prefix = Path(raw_name).parent.name
                         clean_name = f"{parent_prefix}_{clean_name}" if parent_prefix else clean_name
                     f = tf.extractfile(member)
                     if f is None:
                         continue
-                    member_bytes = f.read()
-                    cumulative_size += len(member_bytes)
-                    if cumulative_size > limit:
-                        raise FileSizeExceededError(
-                            f"Cumulative extracted size of archive '{filename}' exceeds {limit} bytes (bomb guard)."
-                        )
+                    # Stream member decompression in chunks
+                    chunks = []
+                    member_size = 0
+                    with f:
+                        while True:
+                            chunk = f.read(STREAM_CHUNK_SIZE)
+                            if not chunk:
+                                break
+                            cumulative_size += len(chunk)
+                            member_size += len(chunk)
+                            if cumulative_size > limit:
+                                raise FileSizeExceededError(
+                                    f"Cumulative extracted size of archive '{filename}' exceeds {limit} bytes (bomb guard)."
+                                )
+                            chunks.append(chunk)
+                    member_bytes = b"".join(chunks)
                     extracted.append((clean_name, member_bytes))
             return extracted if extracted else [(filename, data)]
 
@@ -253,8 +313,14 @@ class ForensicPipeline:
         allow_duplicate: bool = False,
         custom_regex: Optional[str] = None,
         source_host: Optional[str] = None,
+        archive_depth: int = 0,
     ) -> Tuple[PreservedEvidence, List[Event]]:
         """Collect, preserve, hash, parse, and normalize an evidence file provided as bytes."""
+        if archive_depth > MAX_NESTING_DEPTH:
+            raise FileSizeExceededError(
+                f"Archive nesting depth {archive_depth} exceeds maximum limit of {MAX_NESTING_DEPTH} (archive bomb guard)."
+            )
+
         # Reset stateful syslog year tracker per file
         self.normalizer.last_syslog_month = None
         self.normalizer.current_syslog_year = self.normalizer.base_year
@@ -271,10 +337,6 @@ class ForensicPipeline:
             manifest_check = self.repo.get_manifest(investigation_id)
             for existing_entry in manifest_check.entries:
                 if existing_entry.sha256_digest == raw_sha256:
-                    existing_events = [
-                        ev for ev in self.repo.load_events(investigation_id)
-                        if ev.evidence_id == existing_entry.evidence_id
-                    ]
                     from src.evidence.collector import PreservedEvidence
                     stored_rel = getattr(existing_entry, "stored_filename", None) or getattr(existing_entry, "stored_relpath", None) or existing_entry.original_filename
                     existing_path = self.repo.get_evidence_dir(investigation_id) / stored_rel
@@ -299,6 +361,7 @@ class ForensicPipeline:
                 allow_duplicate=allow_duplicate,
                 source_host=source_host,
                 explicit_format=explicit_format,
+                archive_depth=archive_depth,
             )
 
         # 1c. Cryptographically hash and preserve original bytes in staging
@@ -516,13 +579,21 @@ class ForensicPipeline:
         allow_duplicate: bool = False,
         source_host: Optional[str] = None,
         explicit_format: Optional[str] = None,
+        archive_depth: int = 0,
     ) -> Tuple[PreservedEvidence, List[Event]]:
         """Preserve original archive and ingest all extracted archive members atomically."""
+        if archive_depth > MAX_NESTING_DEPTH:
+            raise FileSizeExceededError(
+                f"Archive nesting depth {archive_depth} exceeds maximum limit of {MAX_NESTING_DEPTH} (archive bomb guard)."
+            )
+
         collector = self.repo.get_evidence_collector(investigation_id)
         archive_preserved = collector.collect_from_bytes(data, original_filename=filename, staging=True)
 
         try:
-            members = self.expand_archive_bytes(filename, data, collector.max_file_size_bytes)
+            members = self.expand_archive_bytes(
+                filename, data, collector.max_file_size_bytes, depth=archive_depth + 1
+            )
             member_hashes: Dict[str, str] = {}
             all_extracted_events: List[Event] = []
 
@@ -537,6 +608,7 @@ class ForensicPipeline:
                     assigned_timezone=assigned_timezone,
                     allow_duplicate=allow_duplicate,
                     source_host=source_host,
+                    archive_depth=archive_depth + 1,
                 )
                 all_extracted_events.extend(m_events)
 

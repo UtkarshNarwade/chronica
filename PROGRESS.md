@@ -627,6 +627,42 @@ tests\unit\test_atomic_ingest_remediation.py ......                      [100%]
 - Notes and surprises:
   Pre-existing manifests did not have `"metadata"` in entry JSONs. Serializing `"metadata": {}` on entries altered the calculated manifest SHA-256 digest on existing cases. Conditioning the emission of `metadata` on `bool(self.metadata)` preserved complete backward-compatible cryptographic validity.
 
+### Iteration 19 | Finding: F-09 | Started: 2026-11-09T22:38:00+05:30
+- Reproduction test: `tests/unit/test_archive_bomb_remediation.py`
+- Failing output (real, pasted):
+```text
+FAILED tests/unit/test_archive_bomb_remediation.py::test_reproduce_streaming_bomb_guard_caps_peak_memory
+AssertionError: Peak memory 49.44MB exceeded 5MB bound!
+FAILED tests/unit/test_archive_bomb_remediation.py::test_reproduce_member_count_cap
+Failed: DID NOT RAISE any of (FileSizeExceededError, IngestionError)
+======================== 2 failed, 216 passed in 8.10s ========================
+```
+- Change summary (files, why):
+  - `src/pipeline.py`: Added constants `MAX_ARCHIVE_MEMBERS = 1000`, `MAX_NESTING_DEPTH = 3`, and `STREAM_CHUNK_SIZE = 65536`.
+  - `src/pipeline.py`: Updated `_decompress_if_needed` to check `MAX_ARCHIVE_MEMBERS` before unpacking zip infolist, and read member content in streaming chunks (`STREAM_CHUNK_SIZE = 65536`) with running byte total, raising `FileSizeExceededError` before full buffer allocation.
+  - `src/pipeline.py`: Updated `expand_archive_bytes` to enforce `depth <= MAX_NESTING_DEPTH`, cap member count (`len(zf.infolist()) <= MAX_ARCHIVE_MEMBERS` and `len(tf.getmembers()) <= MAX_ARCHIVE_MEMBERS`), stream member decompression in chunks with running byte total, and sanitize zip-slip path traversals.
+  - `src/pipeline.py`: Passed `archive_depth` through `ingest_evidence_bytes` and `_ingest_archive_pipeline` to defend against recursive archive bombs.
+  - `tests/unit/test_archive_bomb_remediation.py`: Added unit and adversarial tests measuring peak RSS bounded memory on `.zip` and `.tar.gz` bombs with tracemalloc, member count caps, nesting depth limit, and zip-slip directory traversal sanitization.
+- New test result (real, pasted):
+```text
+tests/unit/test_archive_bomb_remediation.py::test_reproduce_streaming_bomb_guard_caps_peak_memory PASSED [ 16%]
+tests/unit/test_archive_bomb_remediation.py::test_reproduce_member_count_cap PASSED [ 33%]
+tests/unit/test_archive_bomb_remediation.py::test_reproduce_zip_slip_path_traversal_blocked PASSED [ 50%]
+tests/unit/test_archive_bomb_remediation.py::test_adversarial_tar_gz_bomb_streaming_bound PASSED [ 66%]
+tests/unit/test_archive_bomb_remediation.py::test_adversarial_nesting_depth_cap PASSED [ 83%]
+tests/unit/test_archive_bomb_remediation.py::test_adversarial_windows_backslash_traversal_sanitized PASSED [100%]
+
+============================== 6 passed in 0.21s ==============================
+```
+- Full suite result (real, pasted, with counts):
+```text
+============================= 221 passed in 8.00s =============================
+```
+- Commit: pending
+- Status: DONE
+- Notes and surprises:
+  `zf.read(info.filename)` and `tf.extractfile(member).read()` previously loaded entire uncompressed files into RAM before checking size limits, allowing small compressed archives to cause large memory spikes. Streaming decompression in 64KB chunks allows aborting immediately upon exceeding byte boundaries, keeping memory strictly bounded under 5MB.
+
 ## Open questions for the human
 (only things the agent genuinely cannot decide)
 
