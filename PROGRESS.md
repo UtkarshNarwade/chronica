@@ -425,6 +425,36 @@ tests/unit/test_search_cql_remediation.py::test_adversarial_quoted_field_with_sp
 - Notes and surprises:
   Quoted phrases like `"failed password"` previously fell through without unquoting because `is_structured` omitted `free_terms`, resulting in zero matches. Building an explicit AST with `FreeTextNode` and `FieldMatchNode` solved phrase matching, boolean precedence, and scoped negation cleanly.
 
+### Iteration 13 | Finding: F-17 | Started: 2026-11-09T22:02:20+05:30
+- Reproduction test: `tests/unit/test_correlation_remediation.py::test_same_ip_on_two_sources_a_week_apart_is_not_lateral_movement`
+- Failing output (real, pasted):
+```text
+AssertionError: Expected neutral shared identity wording, got: Source IP '192.168.1.50' active across 2 distinct sources: srv1, srv2. Possible lateral movement or scanning indicator.
+assert 'lateral movement' not in "source ip '...g indicator."
+'lateral movement' is contained here:
+   possible lateral movement or scanning indicator.
+```
+- Change summary (files, why):
+  - `src/timeline/correlation.py`: Renamed generic multi-host activity clusters from `LATERAL_USER` / `LATERAL_IP` to `SHARED_USER` / `SHARED_IP` with neutral notes ("Shared identity across sources"), eliminating false claims of attacker lateral movement on routine multi-host service accounts, admin logins, and shared proxy IPs.
+  - `src/timeline/correlation.py`: Added `lateral_movement_window_sec` parameter (default 3600.0s) and implemented `_detect_ordered_hop` algorithm: requires an ordered chronological transition between distinct sources within the time window before classifying as `LATERAL_MOVEMENT_USER` or `LATERAL_MOVEMENT_IP`.
+  - `src/timeline/correlation.py`: Implemented `_effective_time` and `_effective_epoch` prioritizing clock-skew corrected timestamps (`corrected_utc_iso`) over uncorrected normalized time, ensuring clock synchronization directly improves correlation accuracy.
+  - `tests/unit/test_correlation_remediation.py`: Added unit and adversarial tests verifying 7-day apart IPs remain neutral `SHARED_IP`, 15-minute ordered transitions are detected as `LATERAL_MOVEMENT_USER`, and corrected timestamps successfully resolve hops separated by clock drift.
+- New test result (real, pasted):
+```text
+tests/unit/test_correlation_remediation.py::test_same_ip_on_two_sources_a_week_apart_is_not_lateral_movement PASSED [ 33%]
+tests/unit/test_correlation_remediation.py::test_adversarial_ordered_hop_within_window_classified_as_lateral_movement PASSED [ 66%]
+tests/unit/test_correlation_remediation.py::test_adversarial_corrected_time_used_for_window_evaluation PASSED [100%]
+============================== 3 passed in 0.05s ==============================
+```
+- Full suite result (real, pasted, with counts):
+```text
+============================= 188 passed in 7.00s =============================
+```
+- Commit: fix(F-17): enforce time window and neutral labeling for shared identities vs lateral movement
+- Status: DONE
+- Notes and surprises:
+  Unconditionally labeling any account or IP on two or more sources as "lateral movement" led to false critical alarms on standard infrastructure. Requiring an ordered hop within `lateral_movement_window_sec` using corrected time grounds correlation in verified temporal sequences.
+
 ## Open questions for the human
 (only things the agent genuinely cannot decide)
 
