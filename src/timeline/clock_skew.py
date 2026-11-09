@@ -10,9 +10,9 @@ of inconclusive scenarios.
 from __future__ import annotations
 
 import statistics
-from dataclasses import asdict, dataclass, field
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional
 
 from src.timeline.schema import CorrectionStatus, Event
 
@@ -88,6 +88,29 @@ class ClockSkewAnalyzer:
         self.max_conflict_spread_sec = max_conflict_spread_sec
         self.latency_tolerance_sec = latency_tolerance_sec
 
+    @staticmethod
+    def is_anchor_eligible(key: str) -> bool:
+        """Evaluate if an identifier is eligible for cross-host clock synchronization (F-02).
+
+        Host-local sequence numbers such as audit daemon serials ('audit-12345'),
+        numeric response metrics, or process IDs are local counters that collide
+        across unrelated systems. Only true distributed trace, request, or session
+        identifiers qualify as cross-source synchronization anchors.
+        """
+        if not key or not isinstance(key, str):
+            return False
+        cleaned = key.strip()
+        if not cleaned:
+            return False
+        # Exclude per-host auditd serial IDs
+        if cleaned.lower().startswith("audit-"):
+            return False
+        # Exclude pure numeric values (e.g. status codes, response sizes, PIDs)
+        cleaned_no_dot = cleaned.replace(".", "", 1)
+        if cleaned_no_dot.isdigit():
+            return False
+        return True
+
     def discover_anchors(
         self,
         events: List[Event],
@@ -140,6 +163,8 @@ class ClockSkewAnalyzer:
         # 1. REQUEST_ID anchors
         shared_req_keys = set(ref_events_by_req.keys()).intersection(target_events_by_req.keys())
         for key in sorted(shared_req_keys):
+            if not self.is_anchor_eligible(key):
+                continue
             refs = ref_events_by_req[key]
             targets = target_events_by_req[key]
             for i in range(min(len(refs), len(targets))):
@@ -173,6 +198,8 @@ class ClockSkewAnalyzer:
         # 2. SESSION_ID anchors (only for events not already paired via request_id)
         shared_sess_keys = set(ref_events_by_sess.keys()).intersection(target_events_by_sess.keys())
         for key in sorted(shared_sess_keys):
+            if not self.is_anchor_eligible(key):
+                continue
             refs = [ev for ev in ref_events_by_sess[key] if ev.event_id not in paired_ref_event_ids]
             targets = [ev for ev in target_events_by_sess[key] if ev.event_id not in paired_target_event_ids]
             if not refs or not targets:

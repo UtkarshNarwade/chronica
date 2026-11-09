@@ -139,6 +139,33 @@ tests/unit/test_auditd_real_samples.py::test_auditd_numeric_res_codes PASSED [10
 - Notes and surprises:
   Resolved inversion where trailing quote on `res=failed'` prevented matching `res == "failed"`, causing failed logins to be recorded as `AUTH_SUCCESS`. SELinux subject context `subj` is now strictly excluded from actor identity.
 
+### Iteration 6 | Finding: F-02 | Started: 2026-11-09T21:13:30+05:30
+- Reproduction test: `tests/unit/test_clock_skew.py::test_auditd_serial_collision_produces_zero_anchors`
+- Failing output (real, pasted):
+```text
+AssertionError: Colliding auditd serial numbers should produce 0 anchors, got 1
+assert 1 == 0
++  where 1 = len([AnchorPair(anchor_id='anc_req_audit-1001_0', target_event_id='evt_d94f69dd53b8', target_source='host_b', target_utc_iso='2026-10-12T10:20:00.000000Z', target_utc_epoch=1791800400.0, reference_event_id='evt_57d07c88e068', reference_source='host_a', reference_utc_iso='2026-10-12T10:00:00.000000Z', reference_utc_epoch=1791799200.0, anchor_type='REQUEST_ID', anchor_key='audit-1001', raw_offset_sec=1200.0, is_confirmed=True, confidence_notes="Linked by shared Request ID 'audit-1001'.")])
+```
+- Change summary (files, why):
+  - `src/timeline/clock_skew.py`: Added static method `is_anchor_eligible(key: str) -> bool` to `ClockSkewAnalyzer` that explicitly rejects local audit serials (`audit-*`) and numeric values (e.g. status codes, PIDs, response times) from forming cross-source synchronization anchors.
+  - `src/timeline/clock_skew.py`: Filtered both `REQUEST_ID` and `SESSION_ID` anchor discovery loops using `self.is_anchor_eligible(key)`.
+  - `tests/unit/test_clock_skew.py`: Added reproduction test `test_auditd_serial_collision_produces_zero_anchors` and adversarial test `test_is_anchor_eligible_adversarial`.
+- New test result (real, pasted):
+```text
+tests/unit/test_clock_skew.py::test_auditd_serial_collision_produces_zero_anchors PASSED [ 22%]
+tests/unit/test_clock_skew.py::test_is_anchor_eligible_adversarial PASSED [ 33%]
+============================== 9 passed in 0.07s ==============================
+```
+- Full suite result (real, pasted, with counts):
+```text
+============================= 140 passed in 6.90s =============================
+```
+- Commit: pending
+- Status: DONE
+- Notes and surprises:
+  Eliminated false anchor discovery caused by colliding host-local auditd serial numbers across independent Linux servers. Distributed request IDs (`req-*`, `trace-*`, UUIDs) remain fully eligible for clock synchronization.
+
 ## Open questions for the human
 (only things the agent genuinely cannot decide)
 

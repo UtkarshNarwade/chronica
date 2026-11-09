@@ -1,7 +1,5 @@
 """Unit tests for anchor correlation, clock skew estimation, and timeline correction."""
 
-import pytest
-
 from src.timeline.clock_skew import AnchorPair, ClockSkewAnalyzer, ClockSkewEstimate
 from src.timeline.schema import CorrectionStatus, Event
 
@@ -36,6 +34,63 @@ def test_anchor_discovery():
     assert anchors[0].anchor_key == "req-alpha"
     # Target (10:03:00) - Reference (10:00:00) = +180s
     assert anchors[0].raw_offset_sec == 180.0
+
+
+def test_auditd_serial_collision_produces_zero_anchors():
+    """Reproduce F-02: auditd request_id (audit-{serial}) from unrelated hosts must not produce clock-skew anchors."""
+    analyzer = ClockSkewAnalyzer()
+    ev1 = Event.create(
+        investigation_id="inv1",
+        evidence_id="ev1",
+        original_filename="host_a.audit.log",
+        line_number=1,
+        raw_text="type=USER_AUTH ... msg=audit(1728120000.000:1001)",
+        original_timestamp_str="1728120000.000",
+        normalized_utc_iso="2026-10-12T10:00:00.000000Z",
+        source_host="host_a",
+        request_id="audit-1001",
+    )
+    ev2 = Event.create(
+        investigation_id="inv1",
+        evidence_id="ev2",
+        original_filename="host_b.audit.log",
+        line_number=1,
+        raw_text="type=USER_AUTH ... msg=audit(1728121200.000:1001)",
+        original_timestamp_str="1728121200.000",
+        normalized_utc_iso="2026-10-12T10:20:00.000000Z",
+        source_host="host_b",
+        request_id="audit-1001",
+    )
+    anchors = analyzer.discover_anchors([ev1, ev2], reference_source="host_a", target_source="host_b")
+    assert len(anchors) == 0, f"Colliding auditd serial numbers should produce 0 anchors, got {len(anchors)}"
+
+
+def test_is_anchor_eligible_adversarial():
+    """Adversarial check: test anchor eligibility on valid distributed traces, local counters, and numeric tokens."""
+    analyzer = ClockSkewAnalyzer()
+
+    # Valid distributed IDs must be eligible
+    assert analyzer.is_anchor_eligible("req-sec1-002") is True
+    assert analyzer.is_anchor_eligible("trace-4f9a2b8c") is True
+    assert analyzer.is_anchor_eligible("sess-bob-881") is True
+    assert analyzer.is_anchor_eligible("a1b2c3d4-e5f6-7890-abcd-ef1234567890") is True
+
+    # Auditd local serials must NOT be eligible (regardless of case)
+    assert analyzer.is_anchor_eligible("audit-1001") is False
+    assert analyzer.is_anchor_eligible("AUDIT-99999") is False
+    assert analyzer.is_anchor_eligible("Audit-12345") is False
+
+    # Pure numeric tokens (e.g. response times, PIDs, HTTP status codes) must NOT be eligible
+    assert analyzer.is_anchor_eligible("12345") is False
+    assert analyzer.is_anchor_eligible("0.005") is False
+    assert analyzer.is_anchor_eligible("200") is False
+
+    # Empty / whitespace / None must safely return False
+    assert analyzer.is_anchor_eligible("") is False
+    assert analyzer.is_anchor_eligible("   ") is False
+    assert analyzer.is_anchor_eligible(None) is False  # type: ignore
+
+
 
 
 def test_robust_median_offset_estimation():
