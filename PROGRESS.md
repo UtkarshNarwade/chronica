@@ -241,7 +241,7 @@ tests/unit/test_syslog_real_samples.py::test_rsyslog_iso_variants_and_confidence
 ```text
 ============================= 153 passed in 7.04s =============================
 ```
-- Commit: fix(F-11): support rsyslog ISO, RFC 5424 multi-SD, PAM failures, and uid stripping
+- Commit: afdbdfb fix(F-11): support rsyslog ISO, RFC 5424 multi-SD, PAM failures, and uid stripping
 - Status: DONE
 - Notes and surprises:
   Standard rsyslog ISO-8601 logs now parse cleanly as first-class syslog records. Multiple RFC 5424 structured data elements are extracted into `extra_fields["structured_data"]` without leaking into message content, and PAM / sudo authentication failures are correctly classified as `AUTH_FAIL`.
