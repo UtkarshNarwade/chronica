@@ -4,7 +4,7 @@
 | ID    | Task | Acceptance | Status |
 | T0-1  | Create pyproject.toml (or requirements.lock via pip-compile) with pinned versions. Move pytest to dev dependencies. Add ruff and mypy config. | `pip install -e .[dev]` works in a clean venv; `ruff check` and `pytest` run. | DONE |
 | T0-2  | Add .github/workflows/ci.yml: install, ruff, mypy (non-blocking at first), pytest, on push and PR, Python 3.11 and 3.12. | Workflow file valid YAML; local `act`-free dry check: run the same commands locally and paste output. | DONE |
-| T0-3  | Add a Dockerfile (non-root user, no network at runtime) and `.streamlit/config.toml` with gatherUsageStats=false, server.address=127.0.0.1, showErrorDetails=false, headless=true. | Config file contains all four keys; test asserts them. | TODO |
+| T0-3  | Add a Dockerfile (non-root user, no network at runtime) and `.streamlit/config.toml` with gatherUsageStats=false, server.address=127.0.0.1, showErrorDetails=false, headless=true. | Config file contains all four keys; test asserts them. | DONE |
 | T0-4  | Install plotly so the 5 failing UI-adjacent tests run. Confirm they pass or record why. | Full suite count and pass/fail pasted. | TODO |
 
 ## TIER 1: Wrong answers (forensic correctness). These mislead investigators.

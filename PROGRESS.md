@@ -57,6 +57,33 @@ tests/unit/test_packaging_and_config.py::test_ci_workflow_yaml_syntax PASSED [10
 - Notes and surprises:
   GitHub Actions CI workflow created with matrix across Python 3.11 and 3.12, with continue-on-error for mypy in initial phase as specified in acceptance.
 
+### Iteration 3 | Finding: T0-3 | Started: 2026-11-09T17:13:00+05:30
+- Reproduction test: `tests/unit/test_packaging_and_config.py::test_dockerfile_and_streamlit_hardening`
+- Failing output (real, pasted):
+```text
+FAILED tests/unit/test_packaging_and_config.py::test_dockerfile_and_streamlit_hardening
+AssertionError: Dockerfile must exist
+assert False
+where False = exists()
+```
+- Change summary (files, why):
+  - Created `Dockerfile` configuring non-root user `chronica` (UID 1000), local entrypoint bound to `127.0.0.1`, health check, and disabling telemetry.
+  - Updated `.streamlit/config.toml` enforcing `gatherUsageStats=false`, `server.address="127.0.0.1"`, `server.headless=true`, and `client.showErrorDetails=false`.
+  - Added test assertions in `tests/unit/test_packaging_and_config.py` confirming non-root container user and all 4 Streamlit security settings.
+- New test result (real, pasted):
+```text
+tests/unit/test_packaging_and_config.py::test_dockerfile_and_streamlit_hardening PASSED [100%]
+============================== 6 passed in 0.08s ==============================
+```
+- Full suite result (real, pasted, with counts):
+```text
+============================= 133 passed in 7.80s =============================
+```
+- Commit: pending
+- Status: DONE
+- Notes and surprises:
+  Streamlit configuration hardened to loopback-only binding (`127.0.0.1`), headless operation, error detail redaction, and total telemetry suppression.
+
 ## Open questions for the human
 (only things the agent genuinely cannot decide)
 

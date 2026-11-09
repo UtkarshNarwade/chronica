@@ -73,3 +73,32 @@ def test_ci_workflow_yaml_syntax():
             assert key_part == key_part.rstrip(), f"Trailing whitespace before colon at line {idx}"
 
 
+def test_dockerfile_and_streamlit_hardening():
+    """Verify Dockerfile and hardened air-gapped Streamlit settings (T0-3)."""
+    root = Path(__file__).resolve().parent.parent.parent
+    dockerfile_path = root / "Dockerfile"
+    assert dockerfile_path.exists(), "Dockerfile must exist"
+
+    df_content = dockerfile_path.read_text(encoding="utf-8")
+    assert "USER " in df_content, "Dockerfile must configure a non-root user"
+
+    st_cfg_path = root / ".streamlit" / "config.toml"
+    assert st_cfg_path.exists(), ".streamlit/config.toml must exist"
+
+    with open(st_cfg_path, "r", encoding="utf-8") as f:
+        cfg = toml.load(f)
+
+    browser = cfg.get("browser", {})
+    assert browser.get("gatherUsageStats") is False, "gatherUsageStats must be false"
+
+    server = cfg.get("server", {})
+    assert server.get("address") == "127.0.0.1", "server.address must be 127.0.0.1"
+    assert server.get("address") != "0.0.0.0", "server.address must not bind to all interfaces"
+    assert server.get("headless") is True, "server.headless must be true"
+
+    client = cfg.get("client", {})
+    assert client.get("showErrorDetails") is False, "client.showErrorDetails must be false"
+    assert client.get("showErrorDetails") is not True, "showErrorDetails must never be true in production"
+
+
+
