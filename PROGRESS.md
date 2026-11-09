@@ -161,7 +161,7 @@ tests/unit/test_clock_skew.py::test_is_anchor_eligible_adversarial PASSED [ 33%]
 ```text
 ============================= 140 passed in 6.90s =============================
 ```
-- Commit: pending
+- Commit: ab19ba8 fix(F-02): enforce anchor eligibility to reject local auditd serial collisions
 - Status: DONE
 - Notes and surprises:
   Eliminated false anchor discovery caused by colliding host-local auditd serial numbers across independent Linux servers. Distributed request IDs (`req-*`, `trace-*`, UUIDs) remain fully eligible for clock synchronization.
