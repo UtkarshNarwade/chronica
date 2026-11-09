@@ -52,7 +52,7 @@ tests/unit/test_packaging_and_config.py::test_ci_workflow_yaml_syntax PASSED [10
 ```text
 ============================= 132 passed in 7.52s =============================
 ```
-- Commit: pending
+- Commit: 95f99f8 fix(T0-2): add GitHub Actions CI workflow for Python 3.11 and 3.12
 - Status: DONE
 - Notes and surprises:
   GitHub Actions CI workflow created with matrix across Python 3.11 and 3.12, with continue-on-error for mypy in initial phase as specified in acceptance.
