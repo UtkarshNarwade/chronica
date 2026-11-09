@@ -287,7 +287,7 @@ tests/unit/test_web_and_firewall_parsers.py::test_csv_firewall_mixed_case_aliase
 ```text
 ============================= 163 passed in 8.03s =============================
 ```
-- Commit: fix(F-12): improve web access and CSV firewall grammar and distinguish multi-host sources
+- Commit: 5ce7943 fix(F-12): improve web access and CSV firewall grammar and distinguish multi-host sources
 - Status: DONE
 - Notes and surprises:
   Resolved web log request line rejection on attack payloads with spaces, prevented trailing request duration floats from masquerading as cross-host request IDs, enabled header-aware column mapping for firewall CSVs with arbitrary column ordering, and separated identically-named evidence files into distinct timeline sources.
