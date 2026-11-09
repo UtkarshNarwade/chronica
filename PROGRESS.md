@@ -134,7 +134,7 @@ tests/unit/test_auditd_real_samples.py::test_auditd_numeric_res_codes PASSED [10
 ```text
 ============================= 138 passed in 6.82s =============================
 ```
-- Commit: pending
+- Commit: d550766 fix(F-01): parse nested auditd msg block quotes and exclude subj from username
 - Status: DONE
 - Notes and surprises:
   Resolved inversion where trailing quote on `res=failed'` prevented matching `res == "failed"`, causing failed logins to be recorded as `AUTH_SUCCESS`. SELinux subject context `subj` is now strictly excluded from actor identity.
