@@ -107,6 +107,38 @@ tests/unit/test_packaging_and_config.py::test_plotly_installed_and_functional PA
 - Notes and surprises:
   Confirmed all 134 tests in the suite pass cleanly with plotly installed and verified.
 
+### Iteration 5 | Finding: F-01 | Started: 2026-11-09T21:05:00+05:30
+- Reproduction test: `tests/unit/test_auditd_real_samples.py::test_auditd_real_user_auth_failed_inside_quoted_msg`
+- Failing output (real, pasted):
+```text
+AssertionError: Expected severity 'AUTH_FAIL' on res=failed, got 'AUTH_SUCCESS'
+assert 'AUTH_SUCCESS' == 'AUTH_FAIL'
+- AUTH_FAIL
++ AUTH_SUCCESS
+```
+- Change summary (files, why):
+  - `src/parsers/auditd_parser.py`: Added `_parse_auditd_kvs` handling single-quote-aware parsing of nested `msg='...'` blocks in auditd lines and stripping surrounding quotes from keys/values.
+  - `src/parsers/auditd_parser.py`: Removed fallback of `username` to SELinux `subj` context (strictly assigning `username = kv.get("acct")`).
+  - `src/parsers/auditd_parser.py`: Normalized `res` and `success` strings to lower/stripped format, accurately matching `res="failed"` or `res="0"` to `AUTH_FAIL`.
+  - `tests/unit/test_new_parsers_and_features.py`: Updated fixture line 32 to realistic auditd syntax with `msg='...'` wrapper.
+  - `tests/unit/test_auditd_real_samples.py`: Created golden-file tests with realistic `msg='...'` records, `res=failed`, `res=success`, numeric res codes, and assertions verifying `subj` is never used as username.
+- New test result (real, pasted):
+```text
+tests/unit/test_auditd_real_samples.py::test_auditd_real_user_auth_failed_inside_quoted_msg PASSED [ 25%]
+tests/unit/test_auditd_real_samples.py::test_auditd_subj_never_used_as_username PASSED [ 50%]
+tests/unit/test_auditd_real_samples.py::test_auditd_real_user_auth_success PASSED [ 75%]
+tests/unit/test_auditd_real_samples.py::test_auditd_numeric_res_codes PASSED [100%]
+============================== 4 passed in 0.04s ==============================
+```
+- Full suite result (real, pasted, with counts):
+```text
+============================= 138 passed in 6.82s =============================
+```
+- Commit: pending
+- Status: DONE
+- Notes and surprises:
+  Resolved inversion where trailing quote on `res=failed'` prevented matching `res == "failed"`, causing failed logins to be recorded as `AUTH_SUCCESS`. SELinux subject context `subj` is now strictly excluded from actor identity.
+
 ## Open questions for the human
 (only things the agent genuinely cannot decide)
 

@@ -29,7 +29,7 @@ from src.timeline.search import FilterCriteria, TimelineSearchEngine
 
 SAMPLE_AUDITD_LINES = [
     'type=SYSCALL msg=audit(1728123456.789:12345): arch=c000003e syscall=59 success=yes exit=0 uid=1000 auid=1000 exe="/bin/cat" comm="cat"',
-    'type=USER_AUTH msg=audit(1728123457.000:12346): pid=1234 uid=0 auid=1000 res=failed acct="root" hostname=attacker.local addr=192.168.1.50',
+    'type=USER_AUTH msg=audit(1728123457.000:12346): pid=1234 uid=0 auid=1000 ses=1 msg=\'op=PAM:authentication acct="root" exe="/usr/sbin/sshd" hostname=attacker.local addr=192.168.1.50 terminal=ssh res=failed\'',
     'type=EXECVE msg=audit(1728123458.100:12347): argc=2 a0="/usr/bin/cat" a1="/etc/shadow" proctitle=636174202f6574632f736861646f77',
     'type=USER_LOGIN msg=audit(1728123459.200:12348): pid=5678 uid=0 auid=0 res=success acct="admin" hostname=srv-01 addr=10.0.0.1',
 ]

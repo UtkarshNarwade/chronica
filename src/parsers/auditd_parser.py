@@ -14,7 +14,7 @@ Features:
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, List, Optional
 
 from src.parsers.base import BaseParser, ParsedRecord
 
@@ -23,13 +23,47 @@ AUDITD_PATTERN = re.compile(
     r"type=([A-Z0-9_]+)\s+msg=audit\((\d+(?:\.\d+)?):(\d+)\):\s*(.*)$"
 )
 
-# Key-value extraction
-KV_PATTERN = re.compile(r'(\w+)=(?:"([^"]*)"|([\S]+))')
+# Key-value extraction regex: handles key="val", key='val', key=val
+KV_PATTERN = re.compile(r"""(\w+)=(?:"([^"]*)"|'([^']*)'|(\S+))""")
 
 # Confidence detection patterns
 AUDITD_CONFIDENCE_PATTERNS = [
     re.compile(r"type=[A-Z0-9_]+\s+msg=audit\(\d+"),
 ]
+
+
+def _parse_auditd_kvs(kv_section: str) -> Dict[str, str]:
+    """Parse auditd key-value pairs, properly handling single-quoted msg='...' blocks.
+
+    In standard Linux auditd logs (e.g. USER_AUTH), messages have the form:
+      type=USER_AUTH ... msg='op=PAM:authentication acct="alice" ... res=failed'
+    This extracts outer key-values as well as the inner key-values defined within
+    the msg='...' block, stripping surrounding quotes so values like res='failed'
+    evaluate correctly.
+    """
+    kv: Dict[str, str] = {}
+
+    # 1. Parse outer key-values
+    for m in KV_PATTERN.finditer(kv_section):
+        k = m.group(1)
+        # Skip raw msg here if it's the nested sub-block; we parse it in step 2
+        if k == "msg" and m.group(3) is not None:
+            continue
+        v = m.group(2) if m.group(2) is not None else (m.group(3) if m.group(3) is not None else m.group(4))
+        if v is not None:
+            kv[k] = v.strip("'\"")
+
+    # 2. Extract and parse nested msg='...' block
+    msg_block_match = re.search(r"\bmsg='([^']*)'", kv_section)
+    if msg_block_match:
+        inner_content = msg_block_match.group(1)
+        for m in KV_PATTERN.finditer(inner_content):
+            k = m.group(1)
+            v = m.group(2) if m.group(2) is not None else (m.group(3) if m.group(3) is not None else m.group(4))
+            if v is not None:
+                kv[k] = v.strip("'\"")
+
+    return kv
 
 
 def _decode_hex_proctitle(hex_str: str) -> str:
@@ -80,17 +114,13 @@ class AuditdParser(BaseParser):
         # Parse epoch timestamp (seconds.milliseconds)
         original_timestamp_str = epoch_str
 
-        # Extract key-value pairs
-        kv: Dict[str, str] = {}
-        for kv_match in KV_PATTERN.finditer(kv_section):
-            key = kv_match.group(1)
-            val = kv_match.group(2) if kv_match.group(2) is not None else kv_match.group(3)
-            kv[key] = val
+        # Extract key-value pairs (single-quote aware)
+        kv = _parse_auditd_kvs(kv_section)
 
-        # Extract username from acct, uid, auid (prefer acct)
-        username = kv.get("acct") or kv.get("subj") or kv.get("uid") or kv.get("auid")
-        if username and username in ("4294967295", "-1"):
-            username = None  # unset auid sentinel value
+        # Extract username strictly from acct (never from SELinux subj context)
+        username = kv.get("acct")
+        if username and username in ("4294967295", "-1", "?", "(none)", ""):
+            username = None
 
         # Extract host/IP
         source_host = kv.get("hostname") or kv.get("node")
@@ -115,9 +145,10 @@ class AuditdParser(BaseParser):
 
         # Determine severity
         severity = "INFO"
-        res = kv.get("res", "")
+        res = kv.get("res", "").lower().strip("'\"")
+        success = kv.get("success", "").lower().strip("'\"")
         if record_type in ("USER_AUTH", "USER_LOGIN", "USER_CMD"):
-            if res == "failed" or kv.get("success") == "no":
+            if res in ("failed", "0") or success in ("no", "0"):
                 severity = "AUTH_FAIL"
             else:
                 severity = "AUTH_SUCCESS"
