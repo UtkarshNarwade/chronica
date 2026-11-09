@@ -15,8 +15,14 @@ class NormalizationStatus(str, Enum):
     NORMALIZED_ASSUMED_TZ = "NORMALIZED_ASSUMED_TZ"            # Default assumption used (documented)
     NORMALIZED_YEAR_INFERRED = "NORMALIZED_YEAR_INFERRED"      # Syslog yearless timestamp inferred
     AMBIGUOUS_DST = "AMBIGUOUS_DST"                            # Falls within daylight saving fallback hour
+    NONEXISTENT_DST = "NONEXISTENT_DST"                        # Non-existent spring-forward DST gap
+    AMBIGUOUS_TIMESTAMP = "AMBIGUOUS_TIMESTAMP"                # Ambiguous DD/MM vs MM/DD or ambiguous timezone abbr
     INVALID_TIMESTAMP = "INVALID_TIMESTAMP"                    # Non-existent or unparseable date/time
     MISSING_TIMESTAMP = "MISSING_TIMESTAMP"                    # Record had no timestamp
+
+    # Standard forensic aliases
+    NONEXISTENT = "NONEXISTENT_DST"
+    AMBIGUOUS = "AMBIGUOUS_TIMESTAMP"
 
 
 class CorrectionStatus(str, Enum):

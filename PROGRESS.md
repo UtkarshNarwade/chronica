@@ -292,6 +292,51 @@ tests/unit/test_web_and_firewall_parsers.py::test_csv_firewall_mixed_case_aliase
 - Notes and surprises:
   Resolved web log request line rejection on attack payloads with spaces, prevented trailing request duration floats from masquerading as cross-host request IDs, enabled header-aware column mapping for firewall CSVs with arbitrary column ordering, and separated identically-named evidence files into distinct timeline sources.
 
+### Iteration 10 | Finding: F-14 | Started: 2026-11-09T21:38:00+05:30
+- Reproduction test: `tests/unit/test_normalization_remediation.py`
+- Failing output (real, pasted):
+```text
+FAILED tests/unit/test_normalization_remediation.py::test_dst_spring_forward_gap_flagged_as_nonexistent
+AssertionError: assert 'AMBIGUOUS_DST' == 'NONEXISTENT_DST'
+- NONEXISTENT_DST
++ AMBIGUOUS_DST
+FAILED tests/unit/test_normalization_remediation.py::test_ambiguous_dd_mm_vs_mm_dd_flagged
+AssertionError: assert 'NORMALIZED_EXACT' in ('AMBIGUOUS_TIMESTAMP', 'AMBIGUOUS_TIMESTAMP', 'AMBIGUOUS')
+FAILED tests/unit/test_normalization_remediation.py::test_unsupported_12h_ampm_and_ctime_and_tz_abbr
+AssertionError: assert 'INVALID_TIMESTAMP' != 'INVALID_TIMESTAMP'
+FAILED tests/unit/test_normalization_remediation.py::test_yearless_syslog_uses_configured_base_year
+AssertionError: assert '2026-10-11T14:32:01.000000Z'.startswith('2023-10-11')
+```
+- Change summary (files, why):
+  - `src/timeline/schema.py`: Added `NONEXISTENT_DST` and `AMBIGUOUS_TIMESTAMP` (with forensic aliases `NONEXISTENT` and `AMBIGUOUS`) to `NormalizationStatus`.
+  - `src/timeline/normalization.py`: Refined `_localize_and_check_dst()` by round-tripping localized naive timestamps to distinguish non-existent spring-forward DST transition gaps from repeated fall-back hours; formatted both candidate UTC times (`fold=0` and `fold=1`) into explicit warning diagnostics.
+  - `src/timeline/normalization.py`: Added RFC 822 / POSIX timezone abbreviation table `TZ_ABBREVIATIONS` with exact offsets and ambiguity flags for EST, CST, IST, and BST.
+  - `src/timeline/normalization.py`: Implemented POSIX `ctime` parser pattern (`CTIME_PATTERN`) handling both single and double space-padded days.
+  - `src/timeline/normalization.py`: Added regex and logic detecting ambiguous `DD/MM` vs `MM/DD` date formats when both day and month are `<= 12` and unequal; flagged with `AMBIGUOUS_TIMESTAMP` while applying the investigation's `date_order_preference` ("DMY" vs "MDY").
+  - `src/timeline/normalization.py`: Supported 12-hour AM/PM formats across common strptime variants and slash-formatted dates.
+  - `src/timeline/normalization.py`: Added configurable `base_year` and `date_order_preference` parameters to `TimestampNormalizer` to prevent defaulting yearless syslog to analysis-time year.
+  - `tests/unit/test_normalization_remediation.py`: Added reproduction and adversarial tests for DST gap vs fallback distinction, unambiguous day>12 date acceptance, Dec->Jan rollover persistence, and ctime/tz abbreviation validation.
+- New test result (real, pasted):
+```text
+tests/unit/test_normalization_remediation.py::test_dst_spring_forward_gap_flagged_as_nonexistent PASSED [ 12%]
+tests/unit/test_normalization_remediation.py::test_ambiguous_dd_mm_vs_mm_dd_flagged PASSED [ 25%]
+tests/unit/test_normalization_remediation.py::test_unsupported_12h_ampm_and_ctime_and_tz_abbr PASSED [ 37%]
+tests/unit/test_normalization_remediation.py::test_yearless_syslog_uses_configured_base_year PASSED [ 50%]
+tests/unit/test_normalization_remediation.py::test_adversarial_dst_fallback_vs_spring_forward PASSED [ 62%]
+tests/unit/test_normalization_remediation.py::test_adversarial_unambiguous_slashed_dates_do_not_flag_ambiguous PASSED [ 75%]
+tests/unit/test_normalization_remediation.py::test_adversarial_syslog_new_year_rollover_sequence PASSED [ 87%]
+tests/unit/test_normalization_remediation.py::test_adversarial_ctime_with_padding_spaces_and_tz_abbr_coverage PASSED [100%]
+============================== 8 passed in 0.07s ==============================
+```
+- Full suite result (real, pasted, with counts):
+```text
+============================= 171 passed in 7.04s =============================
+```
+- Commit: fix(F-14): handle DST gaps, date ambiguity, AM/PM, ctime, and timezone abbreviations
+- Status: DONE
+- Notes and surprises:
+  Standard Python `zoneinfo` astimezone produces `dt0 != dt1` for both non-existent spring-forward hours and repeated fall-back hours. Round-tripping the localized datetime to naive local time uniquely and deterministically separates non-existent gaps from repeated hours without third-party timezone libraries.
+
 ## Open questions for the human
 (only things the agent genuinely cannot decide)
 
