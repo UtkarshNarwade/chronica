@@ -563,6 +563,34 @@ tests\unit\test_manifest_verification_remediation.py ......              [100%]
 - Notes and surprises:
   Verifying files strictly against `manifest.json` without verifying the manifest against the ledger allowed an attacker who had write access to the filesystem to modify evidence and recalculate the manifest unnoticed. Anchoring `manifest_sha256` in the immutable hash-chained ledger seals this loophole.
 
+### Iteration 17 | Finding: F-07 | Started: 2026-11-09T22:25:25+05:30
+- Reproduction test: `tests/unit/test_tamper_lab_remediation.py`
+- Failing output (real, pasted):
+```text
+ImportError while importing test module 'tests/unit/test_tamper_lab_remediation.py'.
+ImportError: cannot import name 'simulate_isolated_tamper_check' from 'src.evidence.verification'
+============================== 1 error in 0.16s ===============================
+```
+- Change summary (files, why):
+  - `src/evidence/verification.py`: Implemented `simulate_isolated_tamper_check()` to execute tamper simulation strictly on an ephemeral throwaway copy in an isolated temporary sandbox directory, verifying baseline integrity, proving 1-byte alteration is caught by SHA-256 mismatch, and confirming the stored original file remains 100% unaltered. Added support for 0-byte edge cases.
+  - `app.py`: Replaced the in-place file mutation logic in Module 4 (`Integrity & Custody Chain`) with `simulate_isolated_tamper_check()`. Removed the unsafe `.bak` writing and "Restore Clean Artifact State" button that previously mutated real evidence files and corrupted clean evidence on false restores.
+  - `app.py`: Updated the UI to display side-by-side verification rows comparing the pristine on-disk evidence (`INTACT / UNTOUCHED`) against the ephemeral sandbox copy (`TAMPERING DETECTED`).
+  - `tests/unit/test_tamper_lab_remediation.py`: Added unit and adversarial tests verifying stored evidence hash is byte-for-byte identical before and after simulations, zero `.bak` files are created on disk, 0-byte files detect alteration without crashing, and repeated simulations maintain pristine evidence.
+- New test result (real, pasted):
+```text
+tests\unit\test_tamper_lab_remediation.py ...                            [100%]
+
+============================== 3 passed in 0.18s ==============================
+```
+- Full suite result (real, pasted, with counts):
+```text
+============================= 209 passed in 7.87s =============================
+```
+- Commit: PENDING_COMMIT
+- Status: DONE
+- Notes and surprises:
+  The previous tamper lab flipped bytes directly on stored forensic evidence and relied on a fragile `.bak` file or reverse bit-flip to restore clean state. If an analyst clicked "Restore" without tampering, it corrupted authentic evidence. Shifting the demonstration to an ephemeral throwaway copy strictly enforces Rule 9 ("Evidence is read-only forever").
+
 ## Open questions for the human
 (only things the agent genuinely cannot decide)
 

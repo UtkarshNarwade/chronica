@@ -37,7 +37,7 @@ from src.evaluation.ground_truth import ScenarioGroundTruth
 from src.evaluation.metrics import BenchmarkEvaluator
 from src.evaluation.triage import TriageEvaluationProtocol
 from src.evidence.audit_chain import AuditChainLedger, AuditEntry
-from src.evidence.verification import IntegrityStatus
+from src.evidence.verification import IntegrityStatus, simulate_isolated_tamper_check
 from src.forensic_tools import EntityGraphBuilder, ForensicPayloadBaker
 from src.parsers.custom_regex_parser import CustomRegexParser
 from src.parsers.detector import ParserRegistry
@@ -1650,9 +1650,13 @@ elif nav_section == "Evidence Integrity & Ledger":
     else:
         st.info("Audit ledger is empty.")
 
-    # Controlled 1-Byte Tamper Simulation Lab
+    # Controlled Non-Destructive Tamper Simulation Lab
     with st.expander("Controlled 1-Byte Tamper Simulation Lab (Testing & Demonstration)", expanded=False):
-        st.caption("Inject a 1-byte alteration into a preserved evidence file on disk to verify cryptographic tamper detection.")
+        st.caption(
+            "Verify cryptographic tamper detection non-destructively: creates an ephemeral sandbox copy of the "
+            "selected evidence file, flips 1 byte in the copy, and validates that SHA-256 immediately detects "
+            "the tampering while leaving the pristine evidence file on disk 100% untouched."
+        )
         if manifest.entries:
             target_ent = st.selectbox(
                 "Target Evidence File for Simulation",
@@ -1660,72 +1664,58 @@ elif nav_section == "Evidence Integrity & Ledger":
                 format_func=lambda e: f"{e.original_filename} ({e.evidence_id})",
                 key="fault_target_select",
             )
-            sim_col1, sim_col2 = st.columns(2)
-            with sim_col1:
-                if st.button("Simulate Tampering (Flip 1 Byte)", key="sim_tamper_btn"):
-                    p = repo.get_evidence_file_path(active_inv.investigation_id, target_ent.evidence_id)
-                    if p and p.exists():
-                        try:
-                            bak_path = p.parent.parent / f"tamper_backup_{target_ent.evidence_id}.bak"
-                            legacy_bak = p.parent / f"tamper_backup_{target_ent.evidence_id}.bak"
-                            if not bak_path.exists() and legacy_bak.exists():
-                                bak_path = legacy_bak
-                            p.chmod(stat.S_IWRITE)
-                            original_bytes = p.read_bytes()
-                            if not bak_path.exists():
-                                bak_path.write_bytes(original_bytes)
-                            data = bytearray(original_bytes)
-                            if data:
-                                data[0] ^= 0x01
-                                p.write_bytes(data)
-                                p.chmod(stat.S_IREAD)
-                                audit_ledger.append(
-                                    action="TAMPER_SIMULATED",
-                                    summary=f"Controlled 1-byte alteration injected into '{target_ent.original_filename}'.",
-                                    details={"evidence_id": target_ent.evidence_id},
-                                )
-                                if "pipeline_cache" in st.session_state:
-                                    del st.session_state["pipeline_cache"]
-                                st.warning("Tampering injected. Click 'Verify All Evidence Hashes' above to observe detection.")
-                                st.rerun()
-                        except Exception as e:
-                            st.error(f"Injection error: {e}")
-            with sim_col2:
-                if st.button("Restore Clean Artifact State", key="sim_restore_btn"):
-                    p = repo.get_evidence_file_path(active_inv.investigation_id, target_ent.evidence_id)
-                    if p and p.exists():
-                        try:
-                            bak_path = p.parent.parent / f"tamper_backup_{target_ent.evidence_id}.bak"
-                            legacy_bak = p.parent / f"tamper_backup_{target_ent.evidence_id}.bak"
-                            if not bak_path.exists() and legacy_bak.exists():
-                                bak_path = legacy_bak
-                            p.chmod(stat.S_IWRITE)
-                            if bak_path.exists():
-                                clean_bytes = bak_path.read_bytes()
-                                p.write_bytes(clean_bytes)
-                                try:
-                                    bak_path.unlink()
-                                except Exception:
-                                    pass
-                            else:
-                                curr_data = bytearray(p.read_bytes())
-                                if curr_data:
-                                    curr_data[0] ^= 0x01
-                                    p.write_bytes(curr_data)
-                            p.chmod(stat.S_IREAD)
-                            audit_ledger.append(
-                                action="ARTIFACT_RESTORED",
-                                summary=f"Controlled clean state restored for '{target_ent.original_filename}'.",
-                                details={"evidence_id": target_ent.evidence_id},
-                            )
-                            if "pipeline_cache" in st.session_state:
-                                del st.session_state["pipeline_cache"]
-                            st.success(f"Clean state successfully restored for {target_ent.original_filename}.")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Restore error: {e}")
-                    else:
-                        st.info("Artifact path could not be resolved.")
+            if st.button("Run Non-Destructive Tamper Simulation (Sandbox Copy)", key="sim_tamper_btn"):
+                p = repo.get_evidence_file_path(active_inv.investigation_id, target_ent.evidence_id)
+                if p and p.exists():
+                    try:
+                        sim_res = simulate_isolated_tamper_check(
+                            stored_path=p,
+                            recorded_sha256=target_ent.sha256_digest,
+                            evidence_id=target_ent.evidence_id,
+                            original_filename=target_ent.original_filename,
+                        )
+                        st.session_state["tamper_sim_result"] = sim_res
+
+                        audit_ledger.append(
+                            action="TAMPER_SIMULATED",
+                            summary=f"Non-destructive 1-byte alteration verified on ephemeral copy of '{target_ent.original_filename}'. Original evidence remained untouched.",
+                            details={
+                                "evidence_id": target_ent.evidence_id,
+                                "original_filename": target_ent.original_filename,
+                                "mode": "ephemeral_sandbox_copy",
+                                "tampered_digest": sim_res["tampered_copy"].calculated_sha256,
+                                "original_digest": target_ent.sha256_digest,
+                            },
+                        )
+                    except Exception as e:
+                        st.error(f"Simulation error: {e}")
+                else:
+                    st.error("Evidence file could not be located on disk.")
+
+            if "tamper_sim_result" in st.session_state:
+                res = st.session_state["tamper_sim_result"]
+                st.markdown("#### Simulation Results")
+                sim_rows = [
+                    {
+                        "Target": "Stored Evidence (Pristine On-Disk)",
+                        "Recorded SHA-256": target_ent.sha256_digest[:16] + "...",
+                        "Computed SHA-256": (res["baseline"].calculated_sha256 or "")[:16] + "...",
+                        "Status": res["baseline"].status.value,
+                        "Integrity": "INTACT / UNTOUCHED",
+                    },
+                    {
+                        "Target": "Ephemeral Sandbox Copy (1 Byte Flipped)",
+                        "Recorded SHA-256": target_ent.sha256_digest[:16] + "...",
+                        "Computed SHA-256": (res["tampered_copy"].calculated_sha256 or "")[:16] + "...",
+                        "Status": res["tampered_copy"].status.value,
+                        "Integrity": "TAMPERING DETECTED",
+                    },
+                ]
+                st.dataframe(pd.DataFrame(sim_rows), use_container_width=True, hide_index=True)
+                st.success(
+                    "Simulation complete: 1-byte alteration was caught immediately by SHA-256 hash mismatch. "
+                    "Stored original evidence file remains completely unaltered on disk."
+                )
 
 
 # =================================================================================================

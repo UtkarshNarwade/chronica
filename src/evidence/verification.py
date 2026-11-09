@@ -10,7 +10,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, List, Optional, Union
+import tempfile
+from typing import Any, Dict, List, Optional, Union
 
 from src.evidence.hashing import calculate_sha256_file
 from src.evidence.manifest import EvidenceManifest
@@ -207,3 +208,65 @@ def verify_evidence_integrity(
         unavailable_files=unavailable,
         results=results,
     )
+
+
+def simulate_isolated_tamper_check(
+    stored_path: Union[str, Path],
+    recorded_sha256: str,
+    evidence_id: str = "unknown",
+    original_filename: str = "",
+) -> Dict[str, Any]:
+    """Perform a non-destructive tamper simulation on an ephemeral sandbox copy.
+
+    Never modifies, renames, or touches the stored evidence file.
+    Proves that a 1-bit or 1-byte alteration in the evidence stream is
+    immediately and unmistakably detected by SHA-256 verification.
+    """
+    orig_path = Path(stored_path)
+    if not orig_path.is_file():
+        raise FileNotFoundError(f"Original evidence file not found: {orig_path}")
+
+    # 1. Baseline verification on original pristine evidence
+    baseline_result = verify_file_integrity(
+        file_path=orig_path,
+        recorded_sha256=recorded_sha256,
+        evidence_id=evidence_id,
+        original_filename=original_filename,
+    )
+
+    # 2. Perform alteration on ephemeral throwaway copy
+    with tempfile.TemporaryDirectory(prefix="chronica_tamper_sim_") as tmp_dir:
+        temp_copy = Path(tmp_dir) / orig_path.name
+        temp_copy.write_bytes(orig_path.read_bytes())
+
+        data = bytearray(temp_copy.read_bytes())
+        if data:
+            data[0] ^= 0x01
+        else:
+            data = bytearray(b"\x01")
+        temp_copy.write_bytes(data)
+
+        tampered_result = verify_file_integrity(
+            file_path=temp_copy,
+            recorded_sha256=recorded_sha256,
+            evidence_id=evidence_id,
+            original_filename=original_filename,
+        )
+
+    # 3. Post-simulation verification confirming original file is completely unaltered
+    post_check = verify_file_integrity(
+        file_path=orig_path,
+        recorded_sha256=recorded_sha256,
+        evidence_id=evidence_id,
+        original_filename=original_filename,
+    )
+
+    return {
+        "baseline": baseline_result,
+        "tampered_copy": tampered_result,
+        "original_post_check": post_check,
+        "original_unaltered": (
+            baseline_result.calculated_sha256 is not None
+            and baseline_result.calculated_sha256 == post_check.calculated_sha256
+        ),
+    }
