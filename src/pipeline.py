@@ -200,6 +200,7 @@ class ForensicPipeline:
         assigned_timezone: Optional[str] = None,
         allow_duplicate: bool = False,
         custom_regex: Optional[str] = None,
+        source_host: Optional[str] = None,
     ) -> Tuple[PreservedEvidence, List[Event]]:
         """Collect, preserve, hash, parse, and normalize an evidence file provided as bytes."""
         # Reset stateful syslog year tracker per file
@@ -275,7 +276,12 @@ class ForensicPipeline:
                 detected_format = "syslog"
 
         # 4. Parse records preserving line numbers (strict line iterator)
-        parsed_records = list(parser.parse_stream(iter(all_lines)))
+        ingest_context = {
+            "source_host": source_host,
+            "evidence_id": preserved.evidence_id,
+            "filename": filename,
+        }
+        parsed_records = list(parser.parse_stream(iter(all_lines), context=ingest_context))
 
         # 5. Filter out HEADER records (CSV header pollution prevention)
         parsed_records = [pr for pr in parsed_records if pr.parse_status != "HEADER"]
@@ -297,10 +303,13 @@ class ForensicPipeline:
         events: List[Event] = []
         for prec in parsed_records:
             # Host inference for MALFORMED/None source_host records
-            effective_host = prec.source_host
+            effective_host = prec.source_host or source_host
             host_inferred = False
             if effective_host is None and dominant_host is not None:
                 effective_host = dominant_host
+                host_inferred = True
+            elif effective_host is None:
+                effective_host = f"{filename} [{preserved.evidence_id[:8]}]"
                 host_inferred = True
 
             # BSD Syslog year rollover detection
@@ -451,7 +460,7 @@ class ForensicPipeline:
             }
 
         # 3. Build deterministic sorted source list and filename→host mapping
-        available_sources = sorted(list({e.source_host or e.original_filename for e in raw_events}))
+        available_sources = sorted(list({e.source_host or (f"{e.original_filename} [{e.evidence_id[:8]}]" if e.original_filename else "unknown") for e in raw_events}))
 
         # Build filename→host mapping (dominant source_host for each original_filename)
         filename_to_host: Dict[str, str] = {}

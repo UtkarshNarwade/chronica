@@ -1769,6 +1769,14 @@ elif nav_section == "Log Acquisition & Parsers":
             key="ch_assigned_tz_select",
         )
 
+        assigned_host = st.text_input(
+            "Host / Source Label (Optional)",
+            value="",
+            placeholder="e.g. web-01, db-server (leave blank for auto)",
+            key="ch_assigned_host_input",
+            help="User-supplied host label distinguishing multi-server log sources.",
+        ).strip() or None
+
     # Format Detection Confidence Table
     if uploaded_files:
         st.markdown("<strong>Live Pre-Ingestion Format Evaluation</strong>", unsafe_allow_html=True)
@@ -1822,6 +1830,7 @@ elif nav_section == "Log Acquisition & Parsers":
                     explicit_format=None if sel_parser == "autodetect" else sel_parser,
                     assigned_timezone=assigned_tz,
                     custom_regex=custom_rx if sel_parser == "custom_regex" else None,
+                    source_host=assigned_host,
                 )
                 if len(evs) == 0:
                     duplicates_skipped += 1

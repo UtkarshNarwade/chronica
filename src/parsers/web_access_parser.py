@@ -12,24 +12,30 @@ from typing import Any, Dict, List, Optional
 
 from src.parsers.base import BaseParser, ParsedRecord
 
-# Standard Combined Log Format regex with optional trailing request ID / session ID
+# Standard Combined Log Format regex with quoted request string and optional trailing fields
 COMBINED_LOG_REGEX = re.compile(
     r'^([^\s]+)\s+'                   # 1: Client IP
     r'([^\s]+)\s+'                   # 2: Remote logname (identd)
     r'([^\s]+)\s+'                   # 3: Auth user
     r'\[([^\]]+)\]\s+'               # 4: Timestamp [10/Oct/2026:13:55:36 -0700]
-    r'"([A-Z]+)\s+([^"\s]+)(?:\s+HTTP/(\d\.\d))?"\s+'  # 5: Method, 6: URI, 7: HTTP ver
-    r'(\d{3})\s+'                    # 8: HTTP status code
-    r'([^\s]+)'                      # 9: Response bytes or '-'
-    r'(?:\s+"([^"]*)"'               # 10: Referer (optional)
-    r'\s+"([^"]*)")?'                # 11: User-Agent (optional)
-    r'(?:\s+"?([a-zA-Z0-9_\-\.]+)"?)?'  # 12: Optional trailing Request ID / Trace ID
-    r'.*$'
+    r'"([^"]*)"\s+'                  # 5: Full quoted request string
+    r'(\d{3})\s+'                    # 6: HTTP status code
+    r'([^\s]+)'                      # 7: Response bytes or '-'
+    r'(?:\s+"([^"]*)"'               # 8: Referer (optional)
+    r'\s+"([^"]*)")?'                # 9: User-Agent (optional)
+    r'(?:\s+(.*))?$'                 # 10: Trailing fields / tokens (optional)
 )
 
 # Loose fallback for basic Common Log Format (CLF) without referer/agent
 COMMON_LOG_REGEX = re.compile(
-    r'^([^\s]+)\s+([^\s]+)\s+([^\s]+)\s+\[([^\]]+)\]\s+"([A-Z]+)\s+([^"\s]+)(?:\s+HTTP/(\d\.\d))?"\s+(\d{3})\s+([^\s]+).*$'
+    r'^([^\s]+)\s+'
+    r'([^\s]+)\s+'
+    r'([^\s]+)\s+'
+    r'\[([^\]]+)\]\s+'
+    r'"([^"]*)"\s+'
+    r'(\d{3})\s+'
+    r'([^\s]+)'
+    r'(?:\s+(.*))?$'
 )
 
 
@@ -53,8 +59,10 @@ class WebAccessParser(BaseParser):
         warnings: List[str] = []
         extra: Dict[str, Any] = {}
 
+        is_combined = True
         m = COMBINED_LOG_REGEX.match(line)
         if not m:
+            is_combined = False
             m = COMMON_LOG_REGEX.match(line)
 
         if not m:
@@ -74,21 +82,77 @@ class WebAccessParser(BaseParser):
         ident = groups[1]
         authuser = groups[2] if groups[2] != "-" else None
         ts_str = groups[3]
-        method = groups[4]
-        uri = groups[5]
-        http_ver = groups[6] if len(groups) > 6 else None
-        status_code_str = groups[7] if len(groups) > 7 else "200"
-        bytes_str = groups[8] if len(groups) > 8 else "0"
+        req_raw = groups[4].strip()
+        status_code_str = groups[5]
+        bytes_str = groups[6]
 
-        referer = groups[9] if len(groups) > 9 and groups[9] is not None and groups[9] != "-" else None
-        user_agent = groups[10] if len(groups) > 10 and groups[10] is not None and groups[10] != "-" else None
-        request_id = groups[11] if len(groups) > 11 and groups[11] is not None and groups[11] != "-" else None
+        if ident != "-":
+            extra["ident"] = ident
+
+        if is_combined:
+            referer = groups[7] if len(groups) > 7 and groups[7] is not None and groups[7] != "-" else None
+            user_agent = groups[8] if len(groups) > 8 and groups[8] is not None and groups[8] != "-" else None
+            trailing = groups[9] if len(groups) > 9 and groups[9] is not None else None
+        else:
+            referer = None
+            user_agent = None
+            trailing = groups[7] if len(groups) > 7 and groups[7] is not None else None
+
+        # Parse request string into method, uri, http_version
+        method = "-"
+        uri = "-"
+        http_ver = None
+        if req_raw and req_raw != "-":
+            parts = req_raw.split()
+            if len(parts) == 1:
+                method = parts[0].upper()
+                uri = "-"
+            elif len(parts) >= 2:
+                method = parts[0].upper()
+                if parts[-1].upper().startswith("HTTP/"):
+                    http_ver = parts[-1][5:]
+                    uri = " ".join(parts[1:-1])
+                else:
+                    uri = " ".join(parts[1:])
+
+        # Extract request ID: only from named field or explicit req/trace ID token
+        request_id = None
+        if trailing:
+            trailing_clean = trailing.strip()
+            # 1. Named request ID field (e.g. request_id=..., req_id=..., trace_id=...)
+            m_named = re.search(
+                r'(?:request_id|req_id|x_request_id|trace_id)=["\']?([a-zA-Z0-9_\-\.]+)["\']?',
+                trailing_clean,
+                re.IGNORECASE,
+            )
+            if m_named:
+                request_id = m_named.group(1)
+            else:
+                # 2. Explicit request ID token format (req-..., trace-..., or UUID)
+                m_explicit = re.search(
+                    r'(?:^|\s)["\']?(req[-_][a-zA-Z0-9_\-\.]+|trace[-_][a-zA-Z0-9_\-\.]+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})["\']?(?:\s|$)',
+                    trailing_clean,
+                    re.IGNORECASE,
+                )
+                if m_explicit:
+                    request_id = m_explicit.group(1)
+                else:
+                    # 3. Numeric response time / duration ($request_time or $upstream_response_time)
+                    clean_token = trailing_clean.strip('"\'; ')
+                    try:
+                        extra["response_time"] = float(clean_token)
+                    except ValueError:
+                        extra["trailing_extra"] = trailing_clean
 
         # Check for request ID embedded in query string if not in trailing column
-        if not request_id and "req_id=" in uri:
-            m_req = re.search(r"req_id=([a-zA-Z0-9_\-]+)", uri)
+        if not request_id and uri and uri != "-":
+            m_req = re.search(r'(?:req_id|request_id|trace_id)=([a-zA-Z0-9_\-]+)', uri, re.IGNORECASE)
             if m_req:
                 request_id = m_req.group(1)
+
+        source_host = None
+        if context:
+            source_host = context.get("source_host") or context.get("host")
 
         try:
             status_code = int(status_code_str)
@@ -130,7 +194,7 @@ class WebAccessParser(BaseParser):
             line_number=line_number,
             raw_text=line,
             original_timestamp_str=ts_str,
-            source_host=None,
+            source_host=source_host,
             source_app="web_server",
             severity=severity,
             category=category,

@@ -246,6 +246,52 @@ tests/unit/test_syslog_real_samples.py::test_rsyslog_iso_variants_and_confidence
 - Notes and surprises:
   Standard rsyslog ISO-8601 logs now parse cleanly as first-class syslog records. Multiple RFC 5424 structured data elements are extracted into `extra_fields["structured_data"]` without leaking into message content, and PAM / sudo authentication failures are correctly classified as `AUTH_FAIL`.
 
+### Iteration 9 | Finding: F-12 | Started: 2026-11-09T21:30:00+05:30
+- Reproduction test: `tests/unit/test_web_and_firewall_parsers.py`
+- Failing output (real, pasted):
+```text
+FAILED tests/unit/test_web_and_firewall_parsers.py::test_web_log_sqli_with_spaces_parsed_successfully
+AssertionError: Expected SUCCESS, got MALFORMED: ['Line does not conform to Common or Combined web access log format.']
+FAILED tests/unit/test_web_and_firewall_parsers.py::test_web_log_dash_request_line_parsed_successfully
+AssertionError: Expected SUCCESS, got MALFORMED: ['Line does not conform to Common or Combined web access log format.']
+FAILED tests/unit/test_web_and_firewall_parsers.py::test_web_log_lowercase_method_parsed_successfully
+AssertionError: Expected SUCCESS, got MALFORMED: ['Line does not conform to Common or Combined web access log format.']
+FAILED tests/unit/test_web_and_firewall_parsers.py::test_web_log_trailing_float_is_not_request_id
+AssertionError: Float 0.005 was incorrectly assigned as request_id: 0.005
+FAILED tests/unit/test_web_and_firewall_parsers.py::test_web_log_named_or_explicit_request_id_extracted
+AssertionError: assert 'request_id' == 'trace-abc-123'
+FAILED tests/unit/test_web_and_firewall_parsers.py::test_csv_firewall_header_driven_mapping_and_unknown_columns
+AssertionError: Expected src_ip '10.0.0.5', got 'DENY'
+```
+- Change summary (files, why):
+  - `src/parsers/web_access_parser.py`: Updated Combined/Common log grammar to extract the full quoted request string, allowing spaces in URIs (SQL injection), lowercase HTTP methods, and `-` timeout/disconnect lines without failing as MALFORMED.
+  - `src/parsers/web_access_parser.py`: Enforced that request IDs are only extracted from named fields (`request_id=`, `req_id=`, `trace_id=`) or explicit trace token formats (`req-*`, `trace-*`, UUIDs); trailing floating-point response times (e.g. `$request_time` = 0.005) are stored in `extra["response_time"]` instead of polluting `request_id`.
+  - `src/parsers/csv_firewall_parser.py`: Replaced rigid positional indexing with a comprehensive header alias dictionary mapping (`timestamp`, `src_ip`, `dst_ip`, `action`, `src_port`, `dst_port`, `proto`, `rule_id`); preserved unknown/custom CSV columns in `extra_fields`; surfaced explicit diagnostics when required columns are absent.
+  - `src/pipeline.py` & `app.py`: Added user-supplied host assignment `source_host` parameter and fallback evidence-isolated source naming (`f"{filename} [{evidence_id[:8]}]"`) to prevent identical filenames across multiple servers (e.g., `access.log`) from collapsing into a single merged source.
+  - `tests/unit/test_web_and_firewall_parsers.py`: Added comprehensive unit and adversarial tests covering SQLi spaces, binary probes, mixed-case headers, quoted CSV cells with commas, and multi-server source separation.
+- New test result (real, pasted):
+```text
+tests/unit/test_web_and_firewall_parsers.py::test_web_log_sqli_with_spaces_parsed_successfully PASSED [ 10%]
+tests/unit/test_web_and_firewall_parsers.py::test_web_log_dash_request_line_parsed_successfully PASSED [ 20%]
+tests/unit/test_web_and_firewall_parsers.py::test_web_log_lowercase_method_parsed_successfully PASSED [ 30%]
+tests/unit/test_web_and_firewall_parsers.py::test_web_log_trailing_float_is_not_request_id PASSED [ 40%]
+tests/unit/test_web_and_firewall_parsers.py::test_web_log_named_or_explicit_request_id_extracted PASSED [ 50%]
+tests/unit/test_web_and_firewall_parsers.py::test_csv_firewall_header_driven_mapping_and_unknown_columns PASSED [ 60%]
+tests/unit/test_web_and_firewall_parsers.py::test_csv_firewall_missing_required_column_diagnostic PASSED [ 70%]
+tests/unit/test_web_and_firewall_parsers.py::test_two_servers_access_logs_do_not_collapse_into_one_source PASSED [ 80%]
+tests/unit/test_web_and_firewall_parsers.py::test_web_log_empty_and_binary_request_lines PASSED [ 90%]
+tests/unit/test_web_and_firewall_parsers.py::test_csv_firewall_mixed_case_aliases_and_quoted_commas PASSED [100%]
+============================= 10 passed in 0.14s ==============================
+```
+- Full suite result (real, pasted, with counts):
+```text
+============================= 163 passed in 8.03s =============================
+```
+- Commit: fix(F-12): improve web access and CSV firewall grammar and distinguish multi-host sources
+- Status: DONE
+- Notes and surprises:
+  Resolved web log request line rejection on attack payloads with spaces, prevented trailing request duration floats from masquerading as cross-host request IDs, enabled header-aware column mapping for firewall CSVs with arbitrary column ordering, and separated identically-named evidence files into distinct timeline sources.
+
 ## Open questions for the human
 (only things the agent genuinely cannot decide)
 
