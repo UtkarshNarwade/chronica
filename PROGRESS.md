@@ -102,7 +102,7 @@ tests/unit/test_packaging_and_config.py::test_plotly_installed_and_functional PA
 ```text
 ============================= 134 passed in 7.21s =============================
 ```
-- Commit: pending
+- Commit: d4f3ac9 fix(T0-4): verify plotly installation and add integration test
 - Status: DONE
 - Notes and surprises:
   Confirmed all 134 tests in the suite pass cleanly with plotly installed and verified.
