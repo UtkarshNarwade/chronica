@@ -332,7 +332,7 @@ tests/unit/test_normalization_remediation.py::test_adversarial_ctime_with_paddin
 ```text
 ============================= 171 passed in 7.04s =============================
 ```
-- Commit: fix(F-14): handle DST gaps, date ambiguity, AM/PM, ctime, and timezone abbreviations
+- Commit: c4546dd fix(F-14): handle DST gaps, date ambiguity, AM/PM, ctime, and timezone abbreviations
 - Status: DONE
 - Notes and surprises:
   Standard Python `zoneinfo` astimezone produces `dt0 != dt1` for both non-existent spring-forward hours and repeated fall-back hours. Round-tripping the localized datetime to naive local time uniquely and deterministically separates non-existent gaps from repeated hours without third-party timezone libraries.
