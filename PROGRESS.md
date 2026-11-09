@@ -204,6 +204,48 @@ tests/unit/test_heuristics_remediation.py::test_malformed_and_missing_timestamps
 - Notes and surprises:
   Resolved four distinct forensic heuristics flaws: (1) false CRITICAL tampering alerts on HTTP response sizes matching Windows Event IDs, (2) spurious cross-host attribution, (3) ignoring clock skew corrections during temporal sequence evaluation, and (4) premature early-break omitting valid investigative leads.
 
+### Iteration 8 | Finding: F-11 | Started: 2026-11-09T21:24:00+05:30
+- Reproduction test: `tests/unit/test_syslog_real_samples.py`
+- Failing output (real, pasted):
+```text
+FAILED tests/unit/test_syslog_real_samples.py::test_rsyslog_iso_timestamp_parsed_successfully
+AssertionError: Expected SUCCESS, got MALFORMED: ['Line does not conform to RFC 3164 or RFC 5424 syslog patterns.']
+FAILED tests/unit/test_syslog_real_samples.py::test_failed_keyboard_interactive_pam_flagged_as_auth_fail
+AssertionError: Expected AUTH_FAIL, got INFO
+FAILED tests/unit/test_syslog_real_samples.py::test_session_opened_strips_uid_into_separate_field
+AssertionError: Expected username 'alice', got 'alice(uid=1000)'
+FAILED tests/unit/test_syslog_real_samples.py::test_rfc5424_multiple_structured_data_elements_does_not_leak_into_message
+AssertionError: Expected 'User logged in', got '[examplePriority@32473 class="high"] User logged in'
+FAILED tests/unit/test_syslog_real_samples.py::test_sudo_auth_failure_flagged_as_auth_fail
+AssertionError: Expected AUTH_FAIL, got INFO
+```
+- Change summary (files, why):
+  - `src/parsers/syslog_parser.py`: Added `RSYSLOG_ISO_PATTERN` supporting standard rsyslog RFC 3339/ISO-8601 timestamps without misclassifying them as MALFORMED or requiring yearless inference warnings.
+  - `src/parsers/syslog_parser.py`: Implemented RFC 5424 structured data parser handling multiple `[SD-ELEMENT]` blocks, escape characters within parameters, and NILVALUE (`-`), preventing structured data from leaking into the message field.
+  - `src/parsers/syslog_parser.py`: Extended OpenSSH failure regex and added `PAM_AUTH_FAIL` and `SUDO_INCORRECT_PASS` regexes to capture `keyboard-interactive/pam`, PAM auth failures, and sudo incorrect password attempts as `AUTH_FAIL`.
+  - `src/parsers/syslog_parser.py`: Added `_clean_user_and_uid` helper to parse and strip `(uid=N)` out of usernames into `extra_fields["uid"]`.
+  - `src/parsers/syslog_parser.py`: Updated `score_confidence` to score rsyslog ISO-8601 files.
+  - `tests/unit/test_syslog_real_samples.py`: Created test suite covering rsyslog ISO-8601, SSH and PAM failures, UID extraction, RFC 5424 multiple SD elements, and adversarial escaped bracket syntax.
+- New test result (real, pasted):
+```text
+tests/unit/test_syslog_real_samples.py::test_rsyslog_iso_timestamp_parsed_successfully PASSED [ 14%]
+tests/unit/test_syslog_real_samples.py::test_failed_keyboard_interactive_pam_flagged_as_auth_fail PASSED [ 28%]
+tests/unit/test_syslog_real_samples.py::test_session_opened_strips_uid_into_separate_field PASSED [ 42%]
+tests/unit/test_syslog_real_samples.py::test_rfc5424_multiple_structured_data_elements_does_not_leak_into_message PASSED [ 57%]
+tests/unit/test_syslog_real_samples.py::test_sudo_auth_failure_flagged_as_auth_fail PASSED [ 71%]
+tests/unit/test_syslog_real_samples.py::test_rfc5424_escaped_brackets_in_sd_and_nilvalue PASSED [ 85%]
+tests/unit/test_syslog_real_samples.py::test_rsyslog_iso_variants_and_confidence_scoring PASSED [100%]
+============================== 7 passed in 0.05s ==============================
+```
+- Full suite result (real, pasted, with counts):
+```text
+============================= 153 passed in 7.04s =============================
+```
+- Commit: fix(F-11): support rsyslog ISO, RFC 5424 multi-SD, PAM failures, and uid stripping
+- Status: DONE
+- Notes and surprises:
+  Standard rsyslog ISO-8601 logs now parse cleanly as first-class syslog records. Multiple RFC 5424 structured data elements are extracted into `extra_fields["structured_data"]` without leaking into message content, and PAM / sudo authentication failures are correctly classified as `AUTH_FAIL`.
+
 ## Open questions for the human
 (only things the agent genuinely cannot decide)
 

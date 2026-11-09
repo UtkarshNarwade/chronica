@@ -16,18 +16,25 @@ RFC3164_PATTERN = re.compile(
     r"^([A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})\s+([^\s:]+)\s+([^:\[\s]+)(?:\[(\d+)\])?:\s*(.*)$"
 )
 
-# RFC 5424: "<34>1 2026-10-11T14:32:01.000Z host sshd 1234 MSGID - message"
-RFC5424_PATTERN = re.compile(
-    r"^<(\d+)>(\d+)\s+([^\s]+)\s+([^\s]+)\s+([^\s]+)\s+([^\s]+)\s+([^\s]+)\s+(?:\[[^\]]*\]|-)\s*(.*)$"
+# rsyslog RSYSLOG_FileFormat default ISO-8601 template:
+# "2026-10-11T14:32:01.123456+00:00 web01 sshd[812]: message"
+RSYSLOG_ISO_PATTERN = re.compile(
+    r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)\s+([^\s:]+)\s+([^:\[\s]+)(?:\[(\d+)\])?:\s*(.*)$"
 )
+
+# RFC 5424 prefix: "<PRI>VER TIMESTAMP HOSTNAME APP-NAME PROCID MSGID STRUCTURED-DATA [MSG]"
+RFC5424_PREFIX = re.compile(
+    r"^<(\d+)>(\d+)\s+([^\s]+)\s+([^\s]+)\s+([^\s]+)\s+([^\s]+)\s+([^\s]+)\s+(.*)$"
+)
+RFC5424_PATTERN = RFC5424_PREFIX
 
 # SSH event extractors
 SSH_ACCEPTED = re.compile(
-    r"Accepted\s+(password|publickey|keyboard-interactive)\s+for\s+(?:invalid\s+user\s+)?([^\s]+)\s+from\s+([^\s]+)\s+port\s+(\d+)",
+    r"Accepted\s+(password|publickey|keyboard-interactive(?:/pam)?)\s+for\s+(?:invalid\s+user\s+)?([^\s]+)\s+from\s+([^\s]+)\s+port\s+(\d+)",
     re.IGNORECASE,
 )
 SSH_FAILED = re.compile(
-    r"Failed\s+(password|publickey)\s+for\s+(?:invalid\s+user\s+)?([^\s]+)\s+from\s+([^\s]+)\s+port\s+(\d+)",
+    r"Failed\s+(password|publickey|keyboard-interactive(?:/pam)?|none)\s+for\s+(?:invalid\s+user\s+)?([^\s]+)\s+from\s+([^\s]+)\s+port\s+(\d+)",
     re.IGNORECASE,
 )
 SSH_INVALID_USER = re.compile(
@@ -43,11 +50,33 @@ SSH_SESSION_CLOSE = re.compile(
     re.IGNORECASE,
 )
 
+# PAM authentication failure extractor (sshd, sudo, login, etc.)
+PAM_AUTH_FAIL = re.compile(
+    r"pam_unix\([^)]+\):\s+authentication failure;\s*(.*)",
+    re.IGNORECASE,
+)
+
 # Sudo event extractors
 SUDO_CMD = re.compile(
     r"([^\s:]+)\s*:\s*TTY=[^;]*;\s*PWD=[^;]*;\s*USER=([^\s;]+)\s*;\s*COMMAND=(.*)",
     re.IGNORECASE,
 )
+SUDO_INCORRECT_PASS = re.compile(
+    r"([^\s:]+)\s*:\s*\d+\s+incorrect\s+password\s+attempt",
+    re.IGNORECASE,
+)
+
+
+def _clean_user_and_uid(raw_user: str, extra: Dict[str, Any]) -> str:
+    """Strip (uid=N) from username string and store uid in extra_fields."""
+    m = re.match(r"^([^(]+)\(uid=(\d+)\)$", raw_user.strip())
+    if m:
+        try:
+            extra["uid"] = int(m.group(2))
+        except ValueError:
+            pass
+        return m.group(1).strip()
+    return raw_user.strip()
 
 
 class SyslogParser(BaseParser):
@@ -70,7 +99,25 @@ class SyslogParser(BaseParser):
         warnings: List[str] = []
         extra: Dict[str, Any] = {}
 
-        # 1. Try RFC 3164
+        # 1. Try rsyslog default ISO-8601 template
+        # "2026-10-11T14:32:01.123456+00:00 web01 sshd[812]: message"
+        m_iso = RSYSLOG_ISO_PATTERN.match(line)
+        if m_iso:
+            ts_str, host, app, pid, msg = m_iso.groups()
+            if pid:
+                extra["pid"] = int(pid)
+            return self._enrich_event(
+                line_number=line_number,
+                raw_text=line,
+                timestamp_str=ts_str,
+                host=host,
+                app=app,
+                msg=msg,
+                extra=extra,
+                warnings=warnings,
+            )
+
+        # 2. Try RFC 3164
         m3164 = RFC3164_PATTERN.match(line)
         if m3164:
             ts_str, host, app, pid, msg = m3164.groups()
@@ -88,16 +135,51 @@ class SyslogParser(BaseParser):
                 warnings=warnings,
             )
 
-        # 2. Try RFC 5424
-        m5424 = RFC5424_PATTERN.match(line)
+        # 3. Try RFC 5424
+        m5424 = RFC5424_PREFIX.match(line)
         if m5424:
-            pri, ver, ts_str, host, app, procid, msgid, msg = m5424.groups()
+            pri, ver, ts_str, host, app, procid, msgid, sd_and_msg = m5424.groups()
             extra["priority"] = pri
             extra["version"] = ver
             if procid != "-":
                 extra["pid"] = procid
             if msgid != "-":
                 extra["msgid"] = msgid
+
+            # Parse structured data according to RFC 5424 section 6.3
+            sd_elements: List[str] = []
+            sd_and_msg_str = sd_and_msg.strip()
+            if sd_and_msg_str.startswith("-"):
+                # NILVALUE structured data
+                rest = sd_and_msg_str[1:].lstrip()
+                msg = rest
+            elif sd_and_msg_str.startswith("["):
+                pos = 0
+                n = len(sd_and_msg_str)
+                while pos < n and sd_and_msg_str[pos] == "[":
+                    end = pos + 1
+                    escaped = False
+                    while end < n:
+                        ch = sd_and_msg_str[end]
+                        if escaped:
+                            escaped = False
+                        elif ch == "\\":
+                            escaped = True
+                        elif ch == "]":
+                            break
+                        end += 1
+                    if end < n and sd_and_msg_str[end] == "]":
+                        sd_elements.append(sd_and_msg_str[pos : end + 1])
+                        pos = end + 1
+                    else:
+                        break
+                msg = sd_and_msg_str[pos:].lstrip()
+            else:
+                msg = sd_and_msg_str
+
+            if sd_elements:
+                extra["structured_data"] = sd_elements
+
             return self._enrich_event(
                 line_number=line_number,
                 raw_text=line,
@@ -109,7 +191,7 @@ class SyslogParser(BaseParser):
                 warnings=warnings,
             )
 
-        # 3. Fallback: Loose syslog style (e.g. Month day time without standard separator)
+        # 4. Fallback: Loose syslog style (e.g. Month day time without standard separator)
         loose_match = re.match(r"^([A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})\s+(.*)$", line)
         if loose_match:
             ts_str, rest = loose_match.groups()
@@ -164,7 +246,7 @@ class SyslogParser(BaseParser):
             auth_type, user, ip, port = m.groups()
             severity = "AUTH_SUCCESS"
             category = "AUTHENTICATION"
-            username = user
+            username = _clean_user_and_uid(user, extra)
             src_ip = ip
             extra["auth_type"] = auth_type
             extra["src_port"] = int(port)
@@ -174,7 +256,7 @@ class SyslogParser(BaseParser):
             auth_type, user, ip, port = m.groups()
             severity = "AUTH_FAIL"
             category = "AUTHENTICATION"
-            username = user
+            username = _clean_user_and_uid(user, extra)
             src_ip = ip
             extra["auth_type"] = auth_type
             extra["src_port"] = int(port)
@@ -184,34 +266,58 @@ class SyslogParser(BaseParser):
             user, ip = m.groups()
             severity = "AUTH_FAIL"
             category = "AUTHENTICATION"
-            username = user
+            username = _clean_user_and_uid(user, extra)
             src_ip = ip
+
+        # PAM authentication failure (sshd, sudo, su, login)
+        elif m := PAM_AUTH_FAIL.search(msg):
+            severity = "AUTH_FAIL"
+            category = "AUTHENTICATION"
+            kv_matches = re.findall(r"(\w+)=([^\s;]*)", m.group(1))
+            kvs = dict(kv_matches)
+            if kvs.get("user"):
+                username = _clean_user_and_uid(kvs["user"], extra)
+            elif kvs.get("ruser"):
+                username = _clean_user_and_uid(kvs["ruser"], extra)
+            if kvs.get("rhost") and kvs["rhost"] != "":
+                src_ip = kvs["rhost"]
+            if kvs.get("uid") and kvs["uid"] != "":
+                try:
+                    extra["uid"] = int(kvs["uid"])
+                except ValueError:
+                    pass
+
+        # Sudo incorrect password attempt
+        elif m := SUDO_INCORRECT_PASS.search(msg):
+            severity = "AUTH_FAIL"
+            category = "AUTHENTICATION"
+            username = _clean_user_and_uid(m.group(1), extra)
 
         # SSH Session Opened
         elif m := SSH_SESSION_OPEN.search(msg):
             user = m.group(1)
             severity = "INFO"
             category = "AUTHENTICATION"
-            username = user
+            username = _clean_user_and_uid(user, extra)
 
         # SSH Session Closed
         elif m := SSH_SESSION_CLOSE.search(msg):
             user = m.group(1)
             severity = "INFO"
             category = "AUTHENTICATION"
-            username = user
+            username = _clean_user_and_uid(user, extra)
 
         # Sudo Command
         elif m := SUDO_CMD.search(msg):
             sudo_user, target_user, cmd = m.groups()
             severity = "WARNING"
             category = "SYSTEM"
-            username = sudo_user
-            extra["target_user"] = target_user
+            username = _clean_user_and_uid(sudo_user, extra)
+            extra["target_user"] = _clean_user_and_uid(target_user, extra)
             extra["command"] = cmd
 
         # Generic App Categorization
-        elif app and ("sshd" in app or "login" in app or "auth" in app):
+        elif app and ("sshd" in app or "login" in app or "auth" in app or "pam" in app):
             category = "AUTHENTICATION"
 
         return ParsedRecord(
@@ -244,11 +350,15 @@ class SyslogParser(BaseParser):
             if not stripped:
                 continue
             total += 1
-            if RFC3164_PATTERN.match(stripped):
+            if RSYSLOG_ISO_PATTERN.match(stripped):
+                matches += 1
+                if "rsyslog ISO-8601 format" not in reasons:
+                    reasons.append("rsyslog ISO-8601 format (ISO-Timestamp Host App[PID])")
+            elif RFC3164_PATTERN.match(stripped):
                 matches += 1
                 if "RFC 3164 BSD syslog format" not in reasons:
                     reasons.append("RFC 3164 BSD syslog format (Month Day Time Host App[PID])")
-            elif RFC5424_PATTERN.match(stripped):
+            elif RFC5424_PREFIX.match(stripped):
                 matches += 1
                 if "RFC 5424 IETF syslog format" not in reasons:
                     reasons.append("RFC 5424 IETF syslog format (<PRI>VER Timestamp Host...)")
