@@ -473,6 +473,7 @@ class ForensicPipeline:
             details={
                 "evidence_id": preserved.evidence_id,
                 "sha256": preserved.sha256_digest,
+                "manifest_sha256": manifest.calculate_manifest_digest(),
                 "parser": parser.format_name,
                 "record_count": len(events),
             },

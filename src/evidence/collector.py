@@ -60,6 +60,10 @@ class EvidenceCollector:
         self.evidence_dir = Path(evidence_dir)
         self.max_file_size_bytes = max_file_size_bytes
         self.evidence_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.evidence_dir.chmod(0o700)
+        except (PermissionError, OSError):
+            pass
 
     @staticmethod
     def sanitize_filename(filename: str) -> str:

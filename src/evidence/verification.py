@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Any, List, Optional, Union
 
 from src.evidence.hashing import calculate_sha256_file
 from src.evidence.manifest import EvidenceManifest
@@ -132,12 +132,58 @@ def verify_file_integrity(
 def verify_evidence_integrity(
     evidence_dir: Union[str, Path],
     manifest: EvidenceManifest,
+    ledger: Optional[Any] = None,
 ) -> InvestigationIntegritySummary:
-    """Verify all evidence files recorded in an investigation manifest."""
+    """Verify all evidence files recorded in an investigation manifest, and verify manifest against audit ledger."""
     base_dir = Path(evidence_dir)
     results: List[VerificationResult] = []
     now_utc = datetime.now(timezone.utc).isoformat()
 
+    # 1. Verify manifest against audit ledger if ledger is available
+    if ledger is not None:
+        entries = ledger.list_entries()
+        latest_manifest_sha = None
+        for entry in reversed(entries):
+            m_sha = entry.details.get("manifest_sha256")
+            if m_sha:
+                latest_manifest_sha = m_sha
+                break
+
+        if latest_manifest_sha is not None:
+            actual_manifest_sha = manifest.calculate_manifest_digest()
+            manifest_file_path = str(base_dir.parent / "manifest.json")
+            if actual_manifest_sha.lower() == latest_manifest_sha.lower():
+                results.append(
+                    VerificationResult(
+                        evidence_id="__manifest__",
+                        original_filename="manifest.json",
+                        stored_path=manifest_file_path,
+                        status=IntegrityStatus.VERIFIED,
+                        recorded_sha256=latest_manifest_sha,
+                        calculated_sha256=actual_manifest_sha,
+                        verification_time_utc=now_utc,
+                        details="Manifest SHA-256 matches anchored audit ledger digest.",
+                    )
+                )
+            else:
+                results.append(
+                    VerificationResult(
+                        evidence_id="__manifest__",
+                        original_filename="manifest.json",
+                        stored_path=manifest_file_path,
+                        status=IntegrityStatus.MISMATCH,
+                        recorded_sha256=latest_manifest_sha,
+                        calculated_sha256=actual_manifest_sha,
+                        verification_time_utc=now_utc,
+                        details=(
+                            f"MANIFEST INTEGRITY VIOLATION DETECTED! Computed manifest SHA-256 "
+                            f"({actual_manifest_sha}) differs from anchored audit ledger digest "
+                            f"({latest_manifest_sha}). The manifest or evidence catalog has been altered."
+                        ),
+                    )
+                )
+
+    # 2. Verify individual evidence files
     for entry in manifest.entries:
         target_path = base_dir / entry.stored_filename
         res = verify_file_integrity(
@@ -155,7 +201,7 @@ def verify_evidence_integrity(
     return InvestigationIntegritySummary(
         investigation_id=manifest.investigation_id,
         verification_time_utc=now_utc,
-        total_files=len(manifest.entries),
+        total_files=len(results),
         verified_files=verified,
         mismatched_files=mismatched,
         unavailable_files=unavailable,

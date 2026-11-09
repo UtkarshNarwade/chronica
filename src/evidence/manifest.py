@@ -17,6 +17,10 @@ from src.evidence.hashing import calculate_sha256_bytes
 MANIFEST_VERSION = "1.0.0"
 
 
+class ManifestIntegrityError(Exception):
+    """Raised when an evidence manifest's cryptographic digest does not match its contents."""
+
+
 @dataclass
 class EvidenceFileEntry:
     """Metadata record for a single collected evidence file."""
@@ -68,6 +72,7 @@ class EvidenceManifest:
     )
     entries: List[EvidenceFileEntry] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    manifest_sha256: Optional[str] = None
 
     def add_entry(self, entry: EvidenceFileEntry) -> None:
         """Add or update an evidence entry in the manifest."""
@@ -106,7 +111,9 @@ class EvidenceManifest:
             "metadata": self.metadata,
         }
         if include_digest:
-            d["manifest_sha256"] = self.calculate_manifest_digest()
+            digest = self.calculate_manifest_digest()
+            self.manifest_sha256 = digest
+            d["manifest_sha256"] = digest
         return d
 
     def save_to_file(self, target_path: Union[str, Path]) -> None:
@@ -118,8 +125,8 @@ class EvidenceManifest:
             json.dump(data, f, indent=2)
 
     @classmethod
-    def load_from_file(cls, path: Union[str, Path]) -> EvidenceManifest:
-        """Load manifest from an existing JSON file."""
+    def load_from_file(cls, path: Union[str, Path], verify_digest: bool = True) -> EvidenceManifest:
+        """Load manifest from an existing JSON file, optionally verifying its internal SHA-256 digest."""
         file_path = Path(path)
         if not file_path.is_file():
             raise FileNotFoundError(f"Manifest not found: {file_path}")
@@ -130,11 +137,23 @@ class EvidenceManifest:
         entries = [
             EvidenceFileEntry.from_dict(e) for e in data.get("entries", [])
         ]
-        return cls(
+        recorded_digest = data.get("manifest_sha256")
+        manifest = cls(
             investigation_id=data.get("investigation_id", "unknown"),
             manifest_version=data.get("manifest_version", MANIFEST_VERSION),
             created_at_utc=data.get("created_at_utc", ""),
             last_updated_utc=data.get("last_updated_utc", ""),
             entries=entries,
             metadata=data.get("metadata", {}),
+            manifest_sha256=recorded_digest,
         )
+
+        if verify_digest and recorded_digest is not None:
+            calculated_digest = manifest.calculate_manifest_digest()
+            if recorded_digest.lower() != calculated_digest.lower():
+                raise ManifestIntegrityError(
+                    f"Manifest integrity verification failed for '{file_path}': "
+                    f"recorded SHA-256 '{recorded_digest}' does not match computed SHA-256 '{calculated_digest}'."
+                )
+
+        return manifest

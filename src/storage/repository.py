@@ -126,6 +126,10 @@ class InvestigationRepository:
         inv_dir.mkdir(parents=True, exist_ok=True)
         evidence_dir = inv_dir / "evidence"
         evidence_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            evidence_dir.chmod(0o700)
+        except (PermissionError, OSError):
+            pass
 
         now_utc = datetime.now(timezone.utc).isoformat()
         meta = InvestigationMetadata(
@@ -146,13 +150,18 @@ class InvestigationRepository:
         # Initialize empty evidence manifest
         manifest = EvidenceManifest(investigation_id=investigation_id)
         manifest.save_to_file(inv_dir / "manifest.json")
+        manifest_digest = manifest.calculate_manifest_digest()
 
         # Log CASE_CREATED audit entry
         ledger = self.get_audit_ledger(investigation_id)
         ledger.append(
             action="CASE_CREATED",
             summary=f"Investigation '{title}' created.",
-            details={"investigation_id": investigation_id, "title": title},
+            details={
+                "investigation_id": investigation_id,
+                "title": title,
+                "manifest_sha256": manifest_digest,
+            },
         )
 
         return meta
@@ -175,13 +184,46 @@ class InvestigationRepository:
         with open(inv_dir / "investigation.json", "w", encoding="utf-8") as f:
             json.dump(meta.to_dict(), f, indent=2)
 
+    def get_tombstone_ledger(self):
+        """Get the surviving tombstone audit ledger for deleted investigations."""
+        from src.evidence.audit_chain import AuditChainLedger
+        tombstones_dir = self.data_root / "tombstones"
+        return AuditChainLedger(tombstones_dir, db_path=self.db_path)
+
     def delete_investigation(self, investigation_id: str, delete_evidence_files: bool = True) -> None:
-        """Delete an investigation, its SQLite events, and optionally its evidence files."""
-        # 1. Delete events from SQLite
+        """Delete an investigation, its SQLite events, and its filesystem directory, recording a durable tombstone."""
+        inv_dir = self._get_inv_dir(investigation_id)
+
+        # 1. Capture final audit ledger state if available
+        last_head = None
+        last_seq = None
+        try:
+            ledger = self.get_audit_ledger(investigation_id)
+            last_entry = ledger._get_last_entry()
+            if last_entry:
+                last_head = last_entry.entry_hash
+                last_seq = last_entry.seq_id
+        except Exception:
+            pass
+
+        # 2. Write tombstone entry to durable system ledger
+        tombstone_ledger = self.get_tombstone_ledger()
+        tombstone_ledger.append(
+            action="INVESTIGATION_DELETED",
+            summary=f"Investigation '{investigation_id}' deleted.",
+            details={
+                "investigation_id": investigation_id,
+                "deleted_at_utc": datetime.now(timezone.utc).isoformat(),
+                "delete_evidence_files": delete_evidence_files,
+                "final_audit_seq": last_seq,
+                "final_audit_head": last_head,
+            },
+        )
+
+        # 3. Delete events from SQLite
         self.db.delete_investigation_events(investigation_id)
 
-        # 2. Delete filesystem directory
-        inv_dir = self._get_inv_dir(investigation_id)
+        # 4. Delete filesystem directory
         if inv_dir.is_dir():
             import stat
             for p in inv_dir.rglob("*"):
@@ -261,11 +303,12 @@ class InvestigationRepository:
         return None
 
     def verify_evidence_integrity(self, investigation_id: str):
-        """Verify SHA-256 hashes of all preserved evidence files in the investigation."""
+        """Verify SHA-256 hashes of all preserved evidence files and manifest against ledger."""
         from src.evidence.verification import verify_evidence_integrity
         ev_dir = self.get_evidence_dir(investigation_id)
         manifest = self.get_manifest(investigation_id)
-        return verify_evidence_integrity(ev_dir, manifest)
+        ledger = self.get_audit_ledger(investigation_id)
+        return verify_evidence_integrity(ev_dir, manifest, ledger=ledger)
 
     def get_audit_ledger(self, investigation_id: str):
         """Get the AuditChainLedger for a specific investigation."""

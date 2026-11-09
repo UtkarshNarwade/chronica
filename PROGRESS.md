@@ -527,6 +527,42 @@ tests\unit\test_audit_chain_remediation.py .......                       [100%]
 - Notes and surprises:
   Without external head anchors, any hash-chained JSONL ledger is vulnerable to tail truncation because internal hash pointers remain self-consistent. Anchoring both in a sidecar file and SQLite database closes this vulnerability and provides double-entry verification.
 
+### Iteration 16 | Finding: F-06 | Started: 2026-11-09T22:18:15+05:30
+- Reproduction test: `tests/unit/test_manifest_verification_remediation.py`
+- Failing output (real, pasted):
+```text
+FAILED tests/unit/test_manifest_verification_remediation.py::test_reproduce_edit_evidence_and_manifest_together_must_fail
+AssertionError: Tampering both evidence and manifest must FAIL verification!
+assert True is False
+FAILED tests/unit/test_manifest_verification_remediation.py::test_reproduce_manifest_load_verifies_internal_digest
+Failed: DID NOT RAISE Exception
+FAILED tests/unit/test_manifest_verification_remediation.py::test_reproduce_delete_investigation_writes_surviving_tombstone
+AttributeError: 'InvestigationRepository' object has no attribute 'get_tombstone_ledger'
+============================== 3 failed in 0.18s ==============================
+```
+- Change summary (files, why):
+  - `src/evidence/manifest.py`: Defined `ManifestIntegrityError`. Added `manifest_sha256` to `EvidenceManifest` and updated `load_from_file` to verify the internal cryptographic digest against normalized content, raising `ManifestIntegrityError` if tampered.
+  - `src/evidence/manifest.py`: Fixed recursion in `to_dict` by gating digest recomputation strictly to `include_digest=True`.
+  - `src/pipeline.py` & `src/storage/repository.py`: Anchored `manifest_sha256` into the immutable audit chain ledger during both `CASE_CREATED` and `EVIDENCE_INGESTED` events.
+  - `src/evidence/verification.py`: Updated `verify_evidence_integrity()` to cross-examine current manifest digest against the anchored `manifest_sha256` in the audit ledger, immediately catching coordinated tamper attacks that modify both evidence and manifest.
+  - `src/evidence/collector.py` & `src/storage/repository.py`: Hardened evidence directories to `0700` and preserved evidence files to `0444` (read-only).
+  - `src/storage/repository.py`: Added `get_tombstone_ledger()` and updated `delete_investigation()` to write a durable tombstone entry recording final sequence id and head hash to `<data_root>/tombstones` prior to case deletion.
+  - `tests/unit/test_manifest_verification_remediation.py`: Added reproduction and adversarial tests for dual evidence/manifest tampering detection, manifest load digest validation, surviving tombstone ledger verification across multiple deletions, sequential ingest manifest tracking, and disk permissions.
+- New test result (real, pasted):
+```text
+tests\unit\test_manifest_verification_remediation.py ......              [100%]
+
+============================== 6 passed in 0.26s ==============================
+```
+- Full suite result (real, pasted, with counts):
+```text
+============================= 206 passed in 8.00s =============================
+```
+- Commit: PENDING_COMMIT
+- Status: DONE
+- Notes and surprises:
+  Verifying files strictly against `manifest.json` without verifying the manifest against the ledger allowed an attacker who had write access to the filesystem to modify evidence and recalculate the manifest unnoticed. Anchoring `manifest_sha256` in the immutable hash-chained ledger seals this loophole.
+
 ## Open questions for the human
 (only things the agent genuinely cannot decide)
 
