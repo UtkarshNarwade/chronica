@@ -337,6 +337,45 @@ tests/unit/test_normalization_remediation.py::test_adversarial_ctime_with_paddin
 - Notes and surprises:
   Standard Python `zoneinfo` astimezone produces `dt0 != dt1` for both non-existent spring-forward hours and repeated fall-back hours. Round-tripping the localized datetime to naive local time uniquely and deterministically separates non-existent gaps from repeated hours without third-party timezone libraries.
 
+### Iteration 11 | Finding: F-15 | Started: 2026-11-09T21:47:00+05:30
+- Reproduction test: `tests/unit/test_clock_skew_remediation.py`
+- Failing output (real, pasted):
+```text
+FAILED tests/unit/test_clock_skew_remediation.py::test_two_identical_anchors_must_not_report_zero_uncertainty
+AssertionError: Uncertainty must not be 0.0 with only 2 anchors, got 0.0
+assert 0.0 > 0.0
+FAILED tests/unit/test_clock_skew_remediation.py::test_linear_drift_applied_to_corrected_timestamps
+AssertionError: Expected drift-corrected time 10:50:00, got 10:50:05 (constant median offset was incorrectly applied without drift)
+assert '10:50:05' == '10:50:00'
+FAILED tests/unit/test_clock_skew_remediation.py::test_default_reference_source_is_source_with_most_anchors
+AssertionError: Expected default reference 'host_central', got 'host_00_isolated'
+assert 'host_00_isolated' == 'host_central'
+```
+- Change summary (files, why):
+  - `src/timeline/clock_skew.py`: Added `uncertainty_sec` to `ClockSkewEstimate` implementing a defensible uncertainty model: combines detrended residual spread with network latency bound and small-sample penalty ($k_N = \text{latency\_tolerance} / \sqrt{N}$), enforcing a resolution floor ($0.5$s) and never reporting $\pm 0.0$ when anchor count $< N$ ($N=30$, documented).
+  - `src/timeline/clock_skew.py`: Implemented linear drift application in `ClockSkewAnalyzer.apply_corrections()` using the exact transformation $T_{\text{ref}} = T_{\text{target}, 0} + (T_{\text{target}} - T_{\text{target}, 0}) / (1 + m)$ when Theil-Sen drift is significant ($\ge 10.0$ ppm); states drift was ignored when insignificant ($< 10.0$ ppm).
+  - `src/timeline/clock_skew.py`: Added detection of probable timezone misconfigurations (offsets within $\pm 60$s of 30-minute / 1-hour multiples) with `probable_tz_misconfiguration=True` and clear explanatory diagnostics.
+  - `src/pipeline.py`: Replaced arbitrary alphabetical source selection with connectivity-based reference source discovery (choosing the source with the highest anchor count across all pairs, falling back to event count), while preserving explicit user overrides.
+  - `src/pipeline.py`: Updated transitive 2-hop synchronization to compute combined uncertainty bounds ($U_1 + U_2$) and forward drift parameters.
+  - `tests/unit/test_clock_skew_remediation.py`: Added comprehensive unit and adversarial tests covering uncertainty bounds covering residuals in 60-70s drift scenarios, insignificant drift suppression, timezone misconfiguration flags, and connectivity-driven reference source selection.
+- New test result (real, pasted):
+```text
+tests/unit/test_clock_skew_remediation.py::test_two_identical_anchors_must_not_report_zero_uncertainty PASSED [ 20%]
+tests/unit/test_clock_skew_remediation.py::test_linear_drift_applied_to_corrected_timestamps PASSED [ 40%]
+tests/unit/test_clock_skew_remediation.py::test_default_reference_source_is_source_with_most_anchors PASSED [ 60%]
+tests/unit/test_clock_skew_remediation.py::test_adversarial_uncertainty_covers_residuals_in_drifting_scenario PASSED [ 80%]
+tests/unit/test_clock_skew_remediation.py::test_adversarial_insignificant_drift_ignored_and_tz_misconfiguration_flagged PASSED [100%]
+============================== 5 passed in 0.15s ==============================
+```
+- Full suite result (real, pasted, with counts):
+```text
+============================ 176 passed in 10.19s =============================
+```
+- Commit: fix(F-15): add uncertainty bounds, apply Theil-Sen drift, and choose reference by connectivity
+- Status: DONE
+- Notes and surprises:
+  Raw MAD of identical offsets is mathematically 0.0, which misled investigators into believing clock synchronization had ±0.000s uncertainty. Adding `uncertainty_sec` with a resolution floor of 0.5s and sample-size penalty preserves mathematical definitions while establishing a forensically defensible confidence bound.
+
 ## Open questions for the human
 (only things the agent genuinely cannot decide)
 

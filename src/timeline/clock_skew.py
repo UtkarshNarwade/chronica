@@ -54,12 +54,16 @@ class ClockSkewEstimate:
     estimated_offset_sec: Optional[float]
     offset_sign_convention: str = SIGN_CONVENTION_DOC
     spread_mad_sec: Optional[float] = None  # Median Absolute Deviation
+    uncertainty_sec: Optional[float] = None  # Defensible uncertainty bound (F-15: latency bound + sample penalty + floor)
     min_offset_sec: Optional[float] = None
     max_offset_sec: Optional[float] = None
     estimation_method: str = "Median of confirmed anchor observations"
     status: str = "ESTIMATED"  # ESTIMATED, INCONCLUSIVE_INSUFFICIENT_ANCHORS, INCONCLUSIVE_CONFLICTING_ANCHORS, DISABLED
     explanation: str = ""
     drift_rate_ppm: Optional[float] = None  # Parts per million drift rate (µs/s)
+    drift_base_epoch: Optional[float] = None  # Reference epoch t0 for applying linear drift
+    drift_applied: bool = False  # True if linear drift was applied to timeline events
+    probable_tz_misconfiguration: bool = False  # True if offset matches whole/half hour multiples
     within_latency_tolerance: bool = False  # True if offset is within latency_tolerance_sec
 
     def to_dict(self) -> Dict[str, Any]:
@@ -74,6 +78,9 @@ class ClockSkewAnalyzer:
         min_anchors_required: int = 2,
         max_conflict_spread_sec: float = 30.0,
         latency_tolerance_sec: float = 2.0,
+        uncertainty_floor_sec: float = 0.5,
+        min_anchors_for_zero_uncertainty: int = 30,
+        significant_drift_ppm_threshold: float = 10.0,
     ) -> None:
         """Initialize the clock skew analyzer.
 
@@ -83,10 +90,16 @@ class ClockSkewAnalyzer:
             latency_tolerance_sec: Observed offsets within ±this value are treated as normal
                 network/execution latency and NOT subtracted (preserving causal ordering).
                 Default 2.0s handles sub-2s execution delays without false clock corrections.
+            uncertainty_floor_sec: Absolute resolution floor below which uncertainty cannot fall (0.5s).
+            min_anchors_for_zero_uncertainty: Threshold below which uncertainty cannot be ±0 (N=30).
+            significant_drift_ppm_threshold: Minimum ppm drift rate to apply linear drift correction (10.0 ppm).
         """
         self.min_anchors_required = min_anchors_required
         self.max_conflict_spread_sec = max_conflict_spread_sec
         self.latency_tolerance_sec = latency_tolerance_sec
+        self.uncertainty_floor_sec = uncertainty_floor_sec
+        self.min_anchors_for_zero_uncertainty = min_anchors_for_zero_uncertainty
+        self.significant_drift_ppm_threshold = significant_drift_ppm_threshold
 
     @staticmethod
     def is_anchor_eligible(key: str) -> bool:
@@ -288,12 +301,15 @@ class ClockSkewAnalyzer:
         spread = max_offset - min_offset
 
         if spread > self.max_conflict_spread_sec:
+            sample_penalty = self.latency_tolerance_sec / (count ** 0.5)
+            unc = round(max(mad + sample_penalty, self.uncertainty_floor_sec), 3)
             return ClockSkewEstimate(
                 target_source=target_source,
                 reference_source=reference_source,
                 anchor_count=count,
                 estimated_offset_sec=None,
                 spread_mad_sec=mad,
+                uncertainty_sec=unc,
                 min_offset_sec=min_offset,
                 max_offset_sec=max_offset,
                 status="INCONCLUSIVE_CONFLICTING_ANCHORS",
@@ -306,6 +322,11 @@ class ClockSkewAnalyzer:
 
         # Theil-Sen linear drift estimation
         drift_rate_ppm: Optional[float] = None
+        drift_base_epoch: Optional[float] = None
+        drift_applied: bool = False
+        drift_slope: float = 0.0
+        residual_spread: float = mad
+
         if count >= 3:
             slopes = []
             for i in range(len(confirmed)):
@@ -317,7 +338,43 @@ class ClockSkewAnalyzer:
                         slope = (a_j.raw_offset_sec - a_i.raw_offset_sec) / dt_ij
                         slopes.append(slope)
             if slopes:
-                drift_rate_ppm = round(statistics.median(slopes) * 1_000_000, 2)
+                median_slope = statistics.median(slopes)
+                drift_rate_ppm = round(median_slope * 1_000_000, 2)
+                drift_slope = median_slope
+
+                if abs(drift_rate_ppm) >= self.significant_drift_ppm_threshold:
+                    drift_applied = True
+                    drift_base_epoch = confirmed[0].reference_utc_epoch
+                    base_offsets = [
+                        a.raw_offset_sec - (drift_slope * (a.reference_utc_epoch - drift_base_epoch))
+                        for a in confirmed
+                    ]
+                    median_offset = round(statistics.median(base_offsets), 3)
+                    residuals = [
+                        abs(a.raw_offset_sec - (median_offset + drift_slope * (a.reference_utc_epoch - drift_base_epoch)))
+                        for a in confirmed
+                    ]
+                    residual_spread = statistics.median(residuals)
+                else:
+                    drift_applied = False
+                    residual_spread = mad
+
+        # Forensic uncertainty model (F-15):
+        # Incorporates latency bound and sample-size penalty.
+        # When anchor count < N (default N=30), uncertainty is bounded away from zero.
+        sample_penalty = self.latency_tolerance_sec / (count ** 0.5)
+        if count < self.min_anchors_for_zero_uncertainty:
+            uncertainty_sec = round(max(residual_spread + sample_penalty, self.uncertainty_floor_sec), 3)
+        else:
+            uncertainty_sec = round(max(residual_spread, self.uncertainty_floor_sec), 3)
+
+        # Detect probable timezone misconfiguration (e.g., offsets within 60s of multiple of 30 mins)
+        probable_tz = False
+        if abs(median_offset) >= 1740.0:
+            rem_30m = abs(median_offset) % 1800.0
+            dist_to_30m = min(rem_30m, 1800.0 - rem_30m)
+            if dist_to_30m <= 60.0:
+                probable_tz = True
 
         # Latency tolerance guard
         within_latency_tolerance = (
@@ -330,15 +387,20 @@ class ClockSkewAnalyzer:
                 f"Observed offset of {median_offset:+.3f}s is within the normal network/execution "
                 f"latency tolerance of ±{self.latency_tolerance_sec:.2f}s. "
                 f"The offset will NOT be subtracted to preserve causal event ordering. "
-                f"({count} anchors, MAD: ±{mad:.3f}s)"
+                f"({count} anchors, uncertainty: ±{uncertainty_sec:.3f}s, MAD: ±{mad:.3f}s)"
             )
         else:
             explanation = (
                 f"Clock offset robustly estimated at {median_offset:+.3f}s from {count} confirmed anchors "
-                f"(MAD spread: ±{mad:.3f}s, range: [{min_offset:.2f}s, {max_offset:.2f}s])."
+                f"(uncertainty: ±{uncertainty_sec:.3f}s, MAD: ±{mad:.3f}s, range: [{min_offset:.2f}s, {max_offset:.2f}s])."
             )
             if drift_rate_ppm is not None:
-                explanation += f" Linear drift rate: {drift_rate_ppm:+.2f} ppm."
+                if drift_applied:
+                    explanation += f" Linear drift of {drift_rate_ppm:+.2f} ppm applied."
+                else:
+                    explanation += f" Linear drift of {drift_rate_ppm:+.2f} ppm was considered insignificant (<{self.significant_drift_ppm_threshold} ppm) and ignored."
+            if probable_tz:
+                explanation += " Probable timezone misconfiguration: offset is within 60s of a 30-minute multiple."
 
         return ClockSkewEstimate(
             target_source=target_source,
@@ -346,11 +408,15 @@ class ClockSkewAnalyzer:
             anchor_count=count,
             estimated_offset_sec=median_offset,
             spread_mad_sec=mad,
+            uncertainty_sec=uncertainty_sec,
             min_offset_sec=min_offset,
             max_offset_sec=max_offset,
             status="ESTIMATED",
             explanation=explanation,
             drift_rate_ppm=drift_rate_ppm,
+            drift_base_epoch=drift_base_epoch,
+            drift_applied=drift_applied,
+            probable_tz_misconfiguration=probable_tz,
             within_latency_tolerance=within_latency_tolerance,
         )
 
@@ -394,11 +460,13 @@ class ClockSkewAnalyzer:
                 updated.append(ev_clone)
                 continue
 
+            effective_uncertainty = estimate.uncertainty_sec if estimate.uncertainty_sec is not None else estimate.spread_mad_sec
+
             # Causal guard: if offset is within latency tolerance, do NOT apply correction
             if estimate.within_latency_tolerance:
                 ev_clone.corrected_utc_iso = ev.normalized_utc_iso
                 ev_clone.estimated_clock_offset_sec = 0.0
-                ev_clone.correction_uncertainty_sec = estimate.spread_mad_sec
+                ev_clone.correction_uncertainty_sec = effective_uncertainty
                 ev_clone.correction_status = CorrectionStatus.UNCORRECTED.value
                 updated.append(ev_clone)
                 continue
@@ -407,10 +475,27 @@ class ClockSkewAnalyzer:
             if ev.normalized_utc_iso:
                 try:
                     dt = datetime.fromisoformat(ev.normalized_utc_iso.replace("Z", "+00:00"))
-                    corrected_dt = dt - timedelta(seconds=estimate.estimated_offset_sec)
+                    target_epoch = dt.timestamp()
+
+                    # Apply linear drift if active
+                    if (
+                        estimate.drift_applied
+                        and estimate.drift_rate_ppm is not None
+                        and estimate.drift_base_epoch is not None
+                    ):
+                        drift_slope = estimate.drift_rate_ppm / 1_000_000.0
+                        # Exact transformation: T_target = (1 + m)*T_ref + const
+                        target_base = estimate.drift_base_epoch + estimate.estimated_offset_sec
+                        delta_target = target_epoch - target_base
+                        ref_epoch = estimate.drift_base_epoch + (delta_target / (1.0 + drift_slope))
+                        offset_to_apply = target_epoch - ref_epoch
+                    else:
+                        offset_to_apply = estimate.estimated_offset_sec
+
+                    corrected_dt = dt - timedelta(seconds=offset_to_apply)
                     ev_clone.corrected_utc_iso = corrected_dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-                    ev_clone.estimated_clock_offset_sec = estimate.estimated_offset_sec
-                    ev_clone.correction_uncertainty_sec = estimate.spread_mad_sec
+                    ev_clone.estimated_clock_offset_sec = round(offset_to_apply, 3)
+                    ev_clone.correction_uncertainty_sec = effective_uncertainty
                     ev_clone.correction_status = CorrectionStatus.CORRECTED.value
                 except Exception as err:
                     ev_clone.data_quality_warnings.append(f"Correction application error: {err}")

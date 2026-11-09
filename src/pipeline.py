@@ -471,11 +471,31 @@ class ForensicPipeline:
                     filename_to_host[fname] = ev.source_host
 
         # 4. Identify reference source with filename-to-host resolution
-        ref_src = (
-            reference_source
-            or (meta.reference_source if meta else None)
-            or (available_sources[0] if available_sources else "")
-        )
+        if not reference_source and (not meta or not meta.reference_source):
+            # Select default reference source with the highest anchor connectivity (F-15)
+            skew_analyzer_temp = ClockSkewAnalyzer(latency_tolerance_sec=latency_tolerance_sec)
+            anchor_counts: Dict[str, int] = {s: 0 for s in available_sources}
+            for i in range(len(available_sources)):
+                for j in range(i + 1, len(available_sources)):
+                    s1 = available_sources[i]
+                    s2 = available_sources[j]
+                    pair_anchors = skew_analyzer_temp.discover_anchors(
+                        raw_events, reference_source=s1, target_source=s2
+                    )
+                    c = len(pair_anchors)
+                    anchor_counts[s1] += c
+                    anchor_counts[s2] += c
+            best_src = max(
+                available_sources,
+                key=lambda s: (anchor_counts.get(s, 0), sum(1 for e in raw_events if (e.source_host or e.original_filename) == s)),
+            ) if available_sources else ""
+            ref_src = best_src
+        else:
+            ref_src = (
+                reference_source
+                or (meta.reference_source if meta else None)
+                or (available_sources[0] if available_sources else "")
+            )
         # Resolve filename-to-host alias if needed
         if ref_src and ref_src not in available_sources and ref_src in filename_to_host:
             ref_src = filename_to_host[ref_src]
@@ -537,6 +557,7 @@ class ForensicPipeline:
                     total_offset = round((inter_est.estimated_offset_sec or 0.0) + hop_est.estimated_offset_sec, 3)
                     import math
                     total_mad = round(math.hypot(inter_est.spread_mad_sec or 0.0, hop_est.spread_mad_sec or 0.0), 3)
+                    total_unc = round((inter_est.uncertainty_sec or inter_est.spread_mad_sec or 0.0) + (hop_est.uncertainty_sec or hop_est.spread_mad_sec or 0.0), 3)
                     within_tol = bool(latency_tolerance_sec > 0 and abs(total_offset) <= latency_tolerance_sec)
                     min_off = (
                         round((inter_est.min_offset_sec or 0.0) + (hop_est.min_offset_sec or 0.0), 3)
@@ -555,9 +576,12 @@ class ForensicPipeline:
                         anchor_count=hop_est.anchor_count,
                         estimated_offset_sec=total_offset,
                         spread_mad_sec=total_mad,
+                        uncertainty_sec=total_unc,
                         min_offset_sec=min_off,
                         max_offset_sec=max_off,
                         drift_rate_ppm=hop_est.drift_rate_ppm,
+                        drift_applied=hop_est.drift_applied,
+                        drift_base_epoch=hop_est.drift_base_epoch,
                         estimation_method=f"Transitive 2-hop median via '{inter_src}'",
                         status="ESTIMATED",
                         within_latency_tolerance=within_tol,
