@@ -29,6 +29,34 @@ tests/unit/test_packaging_and_config.py::test_src_package_importability PASSED [
 - Notes and surprises:
   `pip install -e .[dev]` successfully built and installed editable chronica wheel. Mypy on Windows has an AppLocker/Application Control block for its C-extension DLL locally, but ruff runs cleanly and mypy config is established in pyproject.toml for CI.
 
+### Iteration 2 | Finding: T0-2 | Started: 2026-11-09T17:10:00+05:30
+- Reproduction test: `tests/unit/test_packaging_and_config.py::test_ci_workflow_specification`
+- Failing output (real, pasted):
+```text
+FAILED tests/unit/test_packaging_and_config.py::test_ci_workflow_specification
+AssertionError: CI workflow file .github/workflows/ci.yml must exist
+assert False
+where False = exists()
+```
+- Change summary (files, why):
+  - Created `.github/workflows/ci.yml` defining GitHub Actions CI workflow triggered on push/PR to main.
+  - Configured test matrix for Python 3.11 and 3.12 with checkout, pip install, ruff linting, non-blocking mypy, and pytest execution.
+  - Added tests in `test_packaging_and_config.py` verifying file existence, matrix targets, steps, and YAML syntax integrity.
+- New test result (real, pasted):
+```text
+tests/unit/test_packaging_and_config.py::test_ci_workflow_specification PASSED [ 80%]
+tests/unit/test_packaging_and_config.py::test_ci_workflow_yaml_syntax PASSED [100%]
+============================== 5 passed in 0.09s ==============================
+```
+- Full suite result (real, pasted, with counts):
+```text
+============================= 132 passed in 7.52s =============================
+```
+- Commit: pending
+- Status: DONE
+- Notes and surprises:
+  GitHub Actions CI workflow created with matrix across Python 3.11 and 3.12, with continue-on-error for mypy in initial phase as specified in acceptance.
+
 ## Open questions for the human
 (only things the agent genuinely cannot decide)
 

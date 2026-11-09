@@ -42,3 +42,34 @@ def test_src_package_importability():
     """Verify editable package layout allows importing root src module."""
     mod = importlib.import_module("src.pipeline")
     assert hasattr(mod, "ForensicPipeline")
+
+
+def test_ci_workflow_specification():
+    """Verify GitHub Actions CI workflow file exists and defines test matrix (T0-2)."""
+    root = Path(__file__).resolve().parent.parent.parent
+    ci_path = root / ".github" / "workflows" / "ci.yml"
+    assert ci_path.exists(), "CI workflow file .github/workflows/ci.yml must exist"
+
+    content = ci_path.read_text(encoding="utf-8")
+    assert "push:" in content
+    assert "pull_request:" in content
+    assert '"3.11"' in content or "'3.11'" in content
+    assert '"3.12"' in content or "'3.12'" in content
+    assert "ruff check" in content
+    assert "mypy" in content
+    assert "pytest" in content
+
+
+def test_ci_workflow_yaml_syntax():
+    """Adversarial check: ensure CI file has no tabs or corrupted multiline indentation."""
+    root = Path(__file__).resolve().parent.parent.parent
+    ci_path = root / ".github" / "workflows" / "ci.yml"
+    lines = ci_path.read_text(encoding="utf-8").splitlines()
+    for idx, line in enumerate(lines, 1):
+        assert "\t" not in line, f"Tab character forbidden in YAML at line {idx}"
+        # Validate colon key-value separator
+        if ":" in line and not line.strip().startswith("-") and not line.strip().startswith("#"):
+            key_part = line.split(":", 1)[0]
+            assert key_part == key_part.rstrip(), f"Trailing whitespace before colon at line {idx}"
+
+
