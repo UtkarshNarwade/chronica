@@ -558,7 +558,7 @@ tests\unit\test_manifest_verification_remediation.py ......              [100%]
 ```text
 ============================= 206 passed in 8.00s =============================
 ```
-- Commit: PENDING_COMMIT
+- Commit: 58b6935 fix(F-06): anchor manifest in ledger, verify on load, restrict permissions, and write tombstones
 - Status: DONE
 - Notes and surprises:
   Verifying files strictly against `manifest.json` without verifying the manifest against the ledger allowed an attacker who had write access to the filesystem to modify evidence and recalculate the manifest unnoticed. Anchoring `manifest_sha256` in the immutable hash-chained ledger seals this loophole.
