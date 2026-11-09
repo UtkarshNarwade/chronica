@@ -101,4 +101,17 @@ def test_dockerfile_and_streamlit_hardening():
     assert client.get("showErrorDetails") is not True, "showErrorDetails must never be true in production"
 
 
+def test_plotly_installed_and_functional():
+    """Verify plotly is installed and EntityGraphBuilder generates valid figures (T0-4)."""
+    import plotly
+    import plotly.graph_objects as go
+    from src.forensic_tools import EntityGraphBuilder
+
+    assert plotly.__version__ is not None
+    builder = EntityGraphBuilder()
+    fig = builder.build_plotly_graph([])
+    assert isinstance(fig, go.Figure)
+
+
+
 
