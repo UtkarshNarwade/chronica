@@ -420,7 +420,7 @@ tests/unit/test_search_cql_remediation.py::test_adversarial_quoted_field_with_sp
 ```text
 ============================= 185 passed in 7.39s =============================
 ```
-- Commit: fix(F-16): build AST tokenizer for CQL with boolean logic, exact field matching, and ReDoS guard
+- Commit: 7125839 fix(F-16): build AST tokenizer for CQL with boolean logic, exact field matching, and ReDoS guard
 - Status: DONE
 - Notes and surprises:
   Quoted phrases like `"failed password"` previously fell through without unquoting because `is_structured` omitted `free_terms`, resulting in zero matches. Building an explicit AST with `FreeTextNode` and `FieldMatchNode` solved phrase matching, boolean precedence, and scoped negation cleanly.
