@@ -9,12 +9,190 @@ bookmark filter, and tag filter.
 
 from __future__ import annotations
 
+import concurrent.futures
+import fnmatch
 import ipaddress
 import re
 from dataclasses import dataclass, field
-from typing import List, Optional, Set
+from typing import List, Optional, Tuple
 
 from src.timeline.schema import Event
+
+MAX_REGEX_LEN = 256
+REGEX_TIMEOUT_SEC = 0.2
+
+_REGEX_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="cql_regex")
+
+
+_REDOS_PATTERNS = [
+    re.compile(r"\([^)]*[+*{][^)]*\)[+*{]"),  # Nested quantifiers like (a+)+ or (.*)*
+    re.compile(r"[+*]\s*[+*]"),               # Consecutive quantifiers
+]
+
+
+def is_suspect_redos(pattern: str) -> bool:
+    """Detect common catastrophic backtracking (ReDoS) patterns upfront (F-16)."""
+    if not pattern:
+        return False
+    return any(p.search(pattern) for p in _REDOS_PATTERNS)
+
+
+def safe_regex_search(pattern: re.Pattern, text: str, timeout: float = REGEX_TIMEOUT_SEC) -> bool:
+    """Execute regex search safely with timeout and bounded pattern length to prevent ReDoS (F-16)."""
+    future = _REGEX_POOL.submit(pattern.search, text)
+    try:
+        match = future.result(timeout=timeout)
+        return match is not None
+    except concurrent.futures.TimeoutError:
+        return False
+    except Exception:
+        return False
+
+
+class CQLNode:
+    """Base class for parsed CQL Abstract Syntax Tree nodes."""
+
+    def evaluate(self, ev: Event, text_corpus: str) -> bool:
+        raise NotImplementedError
+
+
+class FreeTextNode(CQLNode):
+    """Matches a phrase or keyword in the full text corpus."""
+
+    def __init__(self, term: str) -> None:
+        self.term = term.lower()
+
+    def evaluate(self, ev: Event, text_corpus: str) -> bool:
+        if not self.term:
+            return True
+        return self.term in text_corpus.lower()
+
+
+class FieldMatchNode(CQLNode):
+    """Matches specific fields with exact semantics or explicit wildcards (*)."""
+
+    def __init__(self, key: str, values: List[str]) -> None:
+        self.key = key.lower()
+        self.values = [v.strip() for v in values if v.strip()]
+
+    def evaluate(self, ev: Event, text_corpus: str) -> bool:
+        if not self.values:
+            return True
+
+        extracted: List[str] = []
+        if self.key in ("host", "hostname", "source_host"):
+            extracted = [ev.source_host or ""]
+        elif self.key in ("user", "username", "actor"):
+            extracted = [ev.username or ""]
+        elif self.key in ("ip", "src_ip", "dst_ip"):
+            extracted = [ip for ip in (ev.src_ip, ev.dst_ip) if ip]
+        elif self.key in ("sev", "severity", "level"):
+            extracted = [(ev.severity or "").upper()]
+        elif self.key in ("cat", "category"):
+            extracted = [(ev.category or "").upper()]
+        elif self.key in ("req", "request_id", "correlation_id"):
+            extracted = [
+                r for r in (
+                    ev.request_id,
+                    str(ev.extra_fields.get("request_id", "")),
+                    str(ev.extra_fields.get("correlation_id", "")),
+                ) if r
+            ]
+        elif self.key in ("sess", "session", "session_id"):
+            extracted = [
+                s for s in (
+                    ev.session_id,
+                    str(ev.extra_fields.get("session_id", "")),
+                ) if s
+            ]
+        elif self.key in ("file", "source", "evidence", "original_filename"):
+            extracted = [f for f in (ev.original_filename, ev.evidence_id) if f]
+        elif self.key in ("status", "parsing_status", "correction_status"):
+            extracted = [st.upper() for st in (ev.parsing_status, ev.correction_status) if st]
+        else:
+            val = ev.extra_fields.get(self.key)
+            if val is not None:
+                extracted = [str(val)]
+
+        if not extracted:
+            return False
+
+        for target_pat in self.values:
+            pat_lower = target_pat.lower()
+            if self.key in ("sev", "severity", "level", "cat", "category", "status"):
+                if any(ev_val == target_pat.upper() for ev_val in extracted):
+                    return True
+            elif self.key in ("ip", "src_ip", "dst_ip"):
+                for ev_ip in extracted:
+                    if ev_ip.lower() == pat_lower:
+                        return True
+                    if "/" in target_pat:
+                        try:
+                            net = ipaddress.ip_network(target_pat, strict=False)
+                            if ipaddress.ip_address(ev_ip) in net:
+                                return True
+                        except ValueError:
+                            pass
+            else:
+                if pat_lower.endswith("*"):
+                    prefix = pat_lower[:-1]
+                    if any(ev_val.lower().startswith(prefix) for ev_val in extracted):
+                        return True
+                elif "*" in pat_lower or "?" in pat_lower:
+                    if any(fnmatch.fnmatchcase(ev_val.lower(), pat_lower) for ev_val in extracted):
+                        return True
+                else:
+                    if any(ev_val.lower() == pat_lower for ev_val in extracted):
+                        return True
+        return False
+
+
+class TimeBoundNode(CQLNode):
+    """Evaluates time boundaries (after / before), supporting inclusive full-day semantics."""
+
+    def __init__(self, bound_type: str, iso_str: str) -> None:
+        self.bound_type = bound_type
+        self.iso_str = iso_str
+
+    def evaluate(self, ev: Event, text_corpus: str) -> bool:
+        ev_ts = ev.corrected_utc_iso or ev.normalized_utc_iso or ""
+        if not ev_ts:
+            return False
+        if self.bound_type == "after":
+            return ev_ts >= self.iso_str
+        elif self.bound_type == "before":
+            return ev_ts <= self.iso_str
+        return True
+
+
+class AndNode(CQLNode):
+    """Conjunction of CQL sub-expressions."""
+
+    def __init__(self, children: List[CQLNode]) -> None:
+        self.children = children
+
+    def evaluate(self, ev: Event, text_corpus: str) -> bool:
+        return all(c.evaluate(ev, text_corpus) for c in self.children)
+
+
+class OrNode(CQLNode):
+    """Disjunction of CQL sub-expressions."""
+
+    def __init__(self, children: List[CQLNode]) -> None:
+        self.children = children
+
+    def evaluate(self, ev: Event, text_corpus: str) -> bool:
+        return any(c.evaluate(ev, text_corpus) for c in self.children)
+
+
+class NotNode(CQLNode):
+    """Negation of a CQL sub-expression."""
+
+    def __init__(self, child: CQLNode) -> None:
+        self.child = child
+
+    def evaluate(self, ev: Event, text_corpus: str) -> bool:
+        return not self.child.evaluate(ev, text_corpus)
 
 
 @dataclass
@@ -33,11 +211,13 @@ class StructuredPredicates:
     free_terms: List[str] = field(default_factory=list)
     after_iso: Optional[str] = None
     before_iso: Optional[str] = None
+    ast_root: Optional[CQLNode] = None
 
     @property
     def is_structured(self) -> bool:
         return bool(
-            self.hosts
+            self.ast_root is not None
+            or self.hosts
             or self.users
             or self.ips
             or self.severities
@@ -47,82 +227,225 @@ class StructuredPredicates:
             or self.files
             or self.statuses
             or self.not_terms
+            or self.free_terms
             or self.after_iso
             or self.before_iso
         )
 
+    def evaluate(self, ev: Event, text_corpus: str) -> bool:
+        if self.ast_root is not None:
+            return self.ast_root.evaluate(ev, text_corpus)
+        return True
+
+
+def tokenize_cql(query: str) -> List[Tuple[str, str]]:
+    """Tokenize a CQL query string into (TOKEN_TYPE, VALUE) pairs."""
+    tokens: List[Tuple[str, str]] = []
+    i = 0
+    n = len(query)
+    while i < n:
+        c = query[i]
+        if c.isspace():
+            i += 1
+            continue
+        if c == "(":
+            tokens.append(("LPAREN", "("))
+            i += 1
+        elif c == ")":
+            tokens.append(("RPAREN", ")"))
+            i += 1
+        elif c in ('"', "'"):
+            quote = c
+            i += 1
+            start = i
+            while i < n and query[i] != quote:
+                if query[i] == "\\" and i + 1 < n:
+                    i += 2
+                else:
+                    i += 1
+            phrase = query[start:i]
+            if i < n and query[i] == quote:
+                i += 1
+            clean_phrase = phrase.replace('\\"', '"').replace("\\'", "'").replace('\\\\', '\\')
+            tokens.append(("TERM", clean_phrase))
+        else:
+            start = i
+            while i < n and not query[i].isspace() and query[i] not in "()":
+                if query[i] in ('"', "'"):
+                    quote = query[i]
+                    i += 1
+                    while i < n and query[i] != quote:
+                        if query[i] == "\\" and i + 1 < n:
+                            i += 2
+                        else:
+                            i += 1
+                    if i < n and query[i] == quote:
+                        i += 1
+                else:
+                    i += 1
+            word = query[start:i]
+            upper_word = word.upper()
+            if upper_word == "AND":
+                tokens.append(("AND", "AND"))
+            elif upper_word == "OR":
+                tokens.append(("OR", "OR"))
+            elif upper_word == "NOT":
+                tokens.append(("NOT", "NOT"))
+            elif word.startswith("-") and len(word) > 1:
+                tokens.append(("NOT", "NOT"))
+                rem = word[1:]
+                if ":" in rem:
+                    tokens.append(("FIELD", rem))
+                else:
+                    tokens.append(("TERM", rem))
+            elif ":" in word:
+                key, rval = word.split(":", 1)
+                clean_rval = rval.replace('\\"', '"').replace("\\'", "'").replace('\\\\', '\\')
+                tokens.append(("FIELD", f"{key}:{clean_rval}"))
+            else:
+                tokens.append(("TERM", word))
+    return tokens
+
+
+class _CQLParser:
+    def __init__(self, tokens: List[Tuple[str, str]]) -> None:
+        self.tokens = tokens
+        self.pos = 0
+
+    def peek(self) -> Optional[Tuple[str, str]]:
+        if self.pos < len(self.tokens):
+            return self.tokens[self.pos]
+        return None
+
+    def advance(self) -> Tuple[str, str]:
+        t = self.tokens[self.pos]
+        self.pos += 1
+        return t
+
+    def parse(self) -> Optional[CQLNode]:
+        if not self.tokens:
+            return None
+        return self.parse_or()
+
+    def parse_or(self) -> CQLNode:
+        left = self.parse_and()
+        while self.peek() and self.peek()[0] == "OR":
+            self.advance()
+            right = self.parse_and()
+            left = OrNode([left, right])
+        return left
+
+    def parse_and(self) -> CQLNode:
+        children = [self.parse_unary()]
+        while self.peek() and self.peek()[0] not in ("OR", "RPAREN"):
+            if self.peek()[0] == "AND":
+                self.advance()
+            children.append(self.parse_unary())
+        if len(children) == 1:
+            return children[0]
+        return AndNode(children)
+
+    def parse_unary(self) -> CQLNode:
+        if self.peek() and self.peek()[0] == "NOT":
+            self.advance()
+            operand = self.parse_unary()
+            return NotNode(operand)
+        return self.parse_primary()
+
+    def parse_primary(self) -> CQLNode:
+        token = self.peek()
+        if not token:
+            return FreeTextNode("")
+        ttype, val = token
+        if ttype == "LPAREN":
+            self.advance()
+            node = self.parse_or()
+            if self.peek() and self.peek()[0] == "RPAREN":
+                self.advance()
+            return node
+        elif ttype == "FIELD":
+            self.advance()
+            key, raw_val = val.split(":", 1)
+            raw_val = raw_val.strip("\"'")
+            key_clean = key.lower()
+            if key_clean in ("after", "since"):
+                if re.match(r"^\d{4}-\d{2}-\d{2}$", raw_val):
+                    iso = f"{raw_val}T00:00:00.000000Z"
+                else:
+                    iso = raw_val
+                return TimeBoundNode("after", iso)
+            elif key_clean in ("before", "until"):
+                if re.match(r"^\d{4}-\d{2}-\d{2}$", raw_val):
+                    iso = f"{raw_val}T23:59:59.999999Z"
+                else:
+                    iso = raw_val
+                return TimeBoundNode("before", iso)
+            else:
+                parts = [p.strip().strip("\"'") for p in raw_val.split(",") if p.strip()]
+                return FieldMatchNode(key_clean, parts if parts else [raw_val])
+        elif ttype == "TERM":
+            self.advance()
+            return FreeTextNode(val)
+        else:
+            self.advance()
+            return FreeTextNode(val)
+
 
 def parse_cql_query(query: str) -> StructuredPredicates:
-    """Parse structured key:value tokens, comma-separated OR lists, and NOT modifiers from a CQL string."""
+    """Parse structured key:value tokens, comma-separated OR lists, NOT modifiers, and boolean logic."""
     preds = StructuredPredicates()
     if not query or not query.strip():
         return preds
 
-    import shlex
-    try:
-        raw_tokens = shlex.split(query)
-    except Exception:
-        raw_tokens = query.split()
+    tokens = tokenize_cql(query)
+    parser = _CQLParser(tokens)
+    preds.ast_root = parser.parse()
 
-    i = 0
-    while i < len(raw_tokens):
-        token = raw_tokens[i].strip()
-        if not token or token.upper() == "AND":
-            i += 1
-            continue
-
-        is_not = False
-        if token.upper() == "NOT":
-            is_not = True
-            i += 1
-            if i >= len(raw_tokens):
-                break
-            token = raw_tokens[i].strip()
-        elif token.startswith("-") and len(token) > 1:
-            is_not = True
-            token = token[1:]
-
-        if ":" in token:
-            key, val = token.split(":", 1)
-            key = key.lower()
-            val = val.strip("\"'")
-            if is_not:
-                preds.not_terms.append(val.lower())
-            elif key in ("after", "since"):
-                preds.after_iso = val
-            elif key in ("before", "until"):
-                preds.before_iso = val
-            else:
-                parts = [p.strip() for p in val.split(",") if p.strip()]
-                if not parts:
-                    parts = [val]
-                if key in ("host", "hostname", "source_host"):
+    # Populate legacy fields for full backward compatibility
+    for ttype, val in tokens:
+        if ttype == "FIELD":
+            if ":" in val:
+                key, rval = val.split(":", 1)
+                rval = rval.strip("\"'")
+                parts = [p.strip().strip("\"'") for p in rval.split(",") if p.strip()] or [rval]
+                k = key.lower()
+                if k in ("host", "hostname", "source_host"):
                     preds.hosts.append([p.lower() for p in parts])
-                elif key in ("user", "username", "actor"):
+                elif k in ("user", "username", "actor"):
                     preds.users.append([p.lower() for p in parts])
-                elif key in ("ip", "src_ip", "dst_ip"):
+                elif k in ("ip", "src_ip", "dst_ip"):
                     preds.ips.append([p.lower() for p in parts])
-                elif key in ("sev", "severity", "level"):
+                elif k in ("sev", "severity", "level"):
                     preds.severities.append([p.upper() for p in parts])
-                elif key in ("cat", "category"):
+                elif k in ("cat", "category"):
                     preds.categories.append([p.upper() for p in parts])
-                elif key in ("req", "request_id", "correlation_id"):
+                elif k in ("req", "request_id", "correlation_id"):
                     preds.request_ids.append([p.lower() for p in parts])
-                elif key in ("session", "session_id", "sess"):
+                elif k in ("session", "session_id", "sess"):
                     preds.session_ids.append([p.lower() for p in parts])
-                elif key in ("file", "source", "evidence", "original_filename"):
+                elif k in ("file", "source", "evidence", "original_filename"):
                     preds.files.append([p.lower() for p in parts])
-                elif key in ("status", "parsing_status", "correction_status"):
+                elif k in ("status", "parsing_status", "correction_status"):
                     preds.statuses.append([p.upper() for p in parts])
-                else:
-                    preds.free_terms.append(token.lower())
+                elif k in ("after", "since"):
+                    preds.after_iso = f"{rval}T00:00:00.000000Z" if re.match(r"^\d{4}-\d{2}-\d{2}$", rval) else rval
+                elif k in ("before", "until"):
+                    preds.before_iso = f"{rval}T23:59:59.999999Z" if re.match(r"^\d{4}-\d{2}-\d{2}$", rval) else rval
+        elif ttype == "TERM":
+            preds.free_terms.append(val.lower())
+
+    # Populate not_terms for legacy checks
+    i = 0
+    while i < len(tokens):
+        if tokens[i][0] == "NOT" and i + 1 < len(tokens):
+            next_t = tokens[i + 1]
+            if next_t[0] == "TERM":
+                preds.not_terms.append(next_t[1].lower())
+            elif next_t[0] == "FIELD" and ":" in next_t[1]:
+                preds.not_terms.append(next_t[1].split(":", 1)[1].strip("\"'").lower())
+            i += 2
         else:
-            clean_term = token.strip("\"'")
-            if is_not:
-                preds.not_terms.append(clean_term.lower())
-            else:
-                preds.free_terms.append(clean_term.lower())
-        i += 1
+            i += 1
 
     return preds
 
@@ -222,10 +545,15 @@ class TimelineSearchEngine:
         cql_preds: Optional[StructuredPredicates] = None
         if criteria.keyword:
             if criteria.use_regex:
-                try:
-                    kw_regex = re.compile(criteria.keyword, re.IGNORECASE)
-                except re.error:
-                    kw_lower = criteria.keyword.strip().lower()
+                if len(criteria.keyword) <= MAX_REGEX_LEN and not is_suspect_redos(criteria.keyword):
+                    try:
+                        kw_regex = re.compile(criteria.keyword, re.IGNORECASE)
+                    except re.error:
+                        kw_lower = criteria.keyword.strip().lower()
+                else:
+                    # Unsafe or oversized pattern: avoid catastrophic backtracking (F-16)
+                    kw_regex = None
+                    kw_lower = criteria.keyword.strip().lower() if not is_suspect_redos(criteria.keyword) else None
             else:
                 cql_preds = parse_cql_query(criteria.keyword)
                 kw_lower = criteria.keyword.strip().lower()
@@ -246,70 +574,22 @@ class TimelineSearchEngine:
         filtered: List[Event] = []
 
         for ev in events:
-            # Build text corpus for keyword search
+            # Build full text corpus for keyword search without truncation (F-16)
             text_corpus = (
                 f"{ev.raw_text} {ev.description} "
                 f"{ev.username or ''} {ev.src_ip or ''} {ev.dst_ip or ''} {ev.request_id or ''} "
                 f"{ev.source_host or ''} {ev.source_app or ''}"
             )
 
-            # 1. Full-text keyword match (structured CQL predicates, regex, or substring)
+            # 1. Full-text keyword match (structured CQL predicates, safe regex with timeout, or substring)
             if kw_regex is not None:
-                if not kw_regex.search(text_corpus[:8192]):
+                if not safe_regex_search(kw_regex, text_corpus):
                     continue
             elif cql_preds and cql_preds.is_structured:
-                # Enforce after / before time bounds
-                ev_ts = ev.corrected_utc_iso or ev.normalized_utc_iso or ""
-                if cql_preds.after_iso and (not ev_ts or ev_ts < cql_preds.after_iso):
-                    continue
-                if cql_preds.before_iso and (not ev_ts or ev_ts > cql_preds.before_iso):
-                    continue
-
-                # Structured CQL predicates evaluation (disjunction within comma-list, conjunction across keys)
-                ev_host_lower = (ev.source_host or "").lower()
-                if any(not any(h in ev_host_lower for h in h_group) for h_group in cql_preds.hosts):
-                    continue
-
-                ev_user_lower = (ev.username or "").lower()
-                if any(not any(u in ev_user_lower for u in u_group) for u_group in cql_preds.users):
-                    continue
-
-                ev_ips_lower = f"{ev.src_ip or ''} {ev.dst_ip or ''}".lower()
-                if any(not any(ip in ev_ips_lower for ip in ip_group) for ip_group in cql_preds.ips):
-                    continue
-
-                ev_sev_upper = (ev.severity or "").upper()
-                if any(not any(s == ev_sev_upper for s in s_group) for s_group in cql_preds.severities):
-                    continue
-
-                ev_cat_upper = (ev.category or "").upper()
-                if any(not any(c == ev_cat_upper for c in c_group) for c_group in cql_preds.categories):
-                    continue
-
-                ev_req_lower = f"{ev.request_id or ''} {ev.extra_fields.get('request_id', '')} {ev.extra_fields.get('correlation_id', '')}".lower()
-                if any(not any(r in ev_req_lower for r in r_group) for r_group in cql_preds.request_ids):
-                    continue
-
-                ev_sess_lower = f"{ev.session_id or ''} {ev.extra_fields.get('session_id', '')} {ev.raw_text}".lower()
-                if any(not any(s in ev_sess_lower for s in s_group) for s_group in cql_preds.session_ids):
-                    continue
-
-                ev_file_lower = f"{ev.original_filename or ''} {ev.evidence_id or ''}".lower()
-                if any(not any(f in ev_file_lower for f in f_group) for f_group in cql_preds.files):
-                    continue
-
-                ev_stat_upper = f"{ev.parsing_status or ''} {ev.correction_status or ''}".upper()
-                if any(not any(st in ev_stat_upper for st in st_group) for st_group in cql_preds.statuses):
-                    continue
-
-                tc_lower = text_corpus[:8192].lower()
-                if any(not_t in tc_lower for not_t in cql_preds.not_terms):
-                    continue
-
-                if any(free_t not in tc_lower for free_t in cql_preds.free_terms):
+                if not cql_preds.evaluate(ev, text_corpus):
                     continue
             elif kw_lower:
-                if kw_lower not in text_corpus[:8192].lower():
+                if kw_lower not in text_corpus.lower():
                     continue
 
             # 2. Exclude keyword (negative filter)

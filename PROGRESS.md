@@ -376,6 +376,55 @@ tests/unit/test_clock_skew_remediation.py::test_adversarial_insignificant_drift_
 - Notes and surprises:
   Raw MAD of identical offsets is mathematically 0.0, which misled investigators into believing clock synchronization had ±0.000s uncertainty. Adding `uncertainty_sec` with a resolution floor of 0.5s and sample-size penalty preserves mathematical definitions while establishing a forensically defensible confidence bound.
 
+### Iteration 12 | Finding: F-16 | Started: 2026-11-09T21:54:30+05:30
+- Reproduction test: `tests/unit/test_search_cql_remediation.py`
+- Failing output (real, pasted):
+```text
+FAILED tests/unit/test_search_cql_remediation.py::test_quoted_phrase_search
+assert 0 == 1
+FAILED tests/unit/test_search_cql_remediation.py::test_or_operator_disjunction
+assert 0 == 2
+FAILED tests/unit/test_search_cql_remediation.py::test_not_field_scoped_to_field_only
+AssertionError: assert 'web-01-backup' in {'db-01', 'web-01'}
+FAILED tests/unit/test_search_cql_remediation.py::test_host_exact_match_vs_wildcard
+AssertionError: assert 2 == 1
+FAILED tests/unit/test_search_cql_remediation.py::test_before_date_inclusive_of_day
+AssertionError: assert 0 == 2
+FAILED tests/unit/test_search_cql_remediation.py::test_full_text_search_beyond_8192_chars
+assert 0 == 1
+FAILED tests/unit/test_search_cql_remediation.py::test_redos_pattern_guarded_with_timeout
+assert 15.182373499999812 < 1.0
+```
+- Change summary (files, why):
+  - `src/timeline/search.py`: Implemented a full recursive-descent CQL parser with AST nodes (`FreeTextNode`, `FieldMatchNode`, `TimeBoundNode`, `AndNode`, `OrNode`, `NotNode`), supporting quoted phrases, explicit disjunction (`OR`), conjunction (`AND`), negation (`NOT`, `-`), and parentheses groupings.
+  - `src/timeline/search.py`: Enforced exact field matching by default (e.g. `host:web-01` matches strictly `web-01`), while supporting explicit wildcard syntax (`host:web*` or `fnmatch` globbing).
+  - `src/timeline/search.py`: Scoped `NOT field:value` to only negate the targeted field rather than globally matching against the full text corpus.
+  - `src/timeline/search.py`: Fixed date semantics to be inclusive: `before:YYYY-MM-DD` automatically bounds to `YYYY-MM-DDT23:59:59.999999Z` and `after:YYYY-MM-DD` bounds to `YYYY-MM-DDT00:00:00.000000Z`.
+  - `src/timeline/search.py`: Removed the `[:8192]` character corpus limit to search complete log lines and payloads of any length.
+  - `src/timeline/search.py`: Hardened regex execution against ReDoS by capping pattern length (`MAX_REGEX_LEN = 256`), detecting nested repetition quantifiers upfront (`is_suspect_redos`), and bounding regex search execution with a hard timeout (`safe_regex_search`).
+  - `tests/unit/test_search_cql_remediation.py`: Added comprehensive unit and adversarial tests covering exact phrases, OR logic, scoped field negation, exact vs wildcard hosts, inclusive date boundaries, full-text corpus traversal, and ReDoS execution safety.
+- New test result (real, pasted):
+```text
+tests/unit/test_search_cql_remediation.py::test_quoted_phrase_search PASSED [ 11%]
+tests/unit/test_search_cql_remediation.py::test_or_operator_disjunction PASSED [ 22%]
+tests/unit/test_search_cql_remediation.py::test_not_field_scoped_to_field_only PASSED [ 33%]
+tests/unit/test_search_cql_remediation.py::test_host_exact_match_vs_wildcard PASSED [ 44%]
+tests/unit/test_search_cql_remediation.py::test_before_date_inclusive_of_day PASSED [ 55%]
+tests/unit/test_search_cql_remediation.py::test_full_text_search_beyond_8192_chars PASSED [ 66%]
+tests/unit/test_search_cql_remediation.py::test_redos_pattern_guarded_with_timeout PASSED [ 77%]
+tests/unit/test_search_cql_remediation.py::test_adversarial_nested_parentheses_and_boolean_precedence PASSED [ 88%]
+tests/unit/test_search_cql_remediation.py::test_adversarial_quoted_field_with_spaces_and_special_chars PASSED [100%]
+============================== 9 passed in 0.06s ==============================
+```
+- Full suite result (real, pasted, with counts):
+```text
+============================= 185 passed in 7.39s =============================
+```
+- Commit: fix(F-16): build AST tokenizer for CQL with boolean logic, exact field matching, and ReDoS guard
+- Status: DONE
+- Notes and surprises:
+  Quoted phrases like `"failed password"` previously fell through without unquoting because `is_structured` omitted `free_terms`, resulting in zero matches. Building an explicit AST with `FreeTextNode` and `FieldMatchNode` solved phrase matching, boolean precedence, and scoped negation cleanly.
+
 ## Open questions for the human
 (only things the agent genuinely cannot decide)
 
