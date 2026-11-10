@@ -879,7 +879,7 @@ tests\unit\test_readme_and_synthetic_jitter_remediation.py ......        [100%]
 ```text
 ============================ 254 passed in 12.18s =============================
 ```
-- Commit: PENDING
+- Commit: 4343ba5 fix(F-21): add realistic noise to synthetic generator, report error distribution, and synchronize README test counts
 - Status: DONE
 - Notes and surprises:
   The synthetic benchmark previously tested a single deterministic offset without noise, yielding an artificial 0.0s error that demonstrated code execution rather than algorithmic resilience. By adding `inject_evidence_noise()` and percentile error distributions (`median`, `p95`, `max`) into `BenchmarkEvaluator` and `scripts/sync_test_metrics.py` to keep documentation metrics synchronized with the full suite, claims of test counts and timing accuracy are verified against reality.
