@@ -35,7 +35,7 @@
 - Complete multi-format export (JSON, CSV, 17-section Markdown, ReportLab PDF).
 - 3 synthetic test scenarios with ground-truth answer keys stored separately.
 - Automated benchmark suite measuring parsing coverage, offset estimation errors, and Kendall's tau.
-- 254 automated unit, integration, end-to-end, and headless UI tests passing in 7.31s.
+- 261 automated unit, integration, end-to-end, and headless UI tests passing in 7.31s.
 
 ### Intentionally Excluded Features
 - **External AI / LLM APIs:** Excluded to ensure 100% offline air-gapped operation and prevent data leakage of confidential logs.

@@ -884,6 +884,44 @@ tests\unit\test_readme_and_synthetic_jitter_remediation.py ......        [100%]
 - Notes and surprises:
   The synthetic benchmark previously tested a single deterministic offset without noise, yielding an artificial 0.0s error that demonstrated code execution rather than algorithmic resilience. By adding `inject_evidence_noise()` and percentile error distributions (`median`, `p95`, `max`) into `BenchmarkEvaluator` and `scripts/sync_test_metrics.py` to keep documentation metrics synchronized with the full suite, claims of test counts and timing accuracy are verified against reality.
 
+### Iteration 26 | Finding: F-22 | Started: 2026-11-10T13:55:00+05:30
+- Reproduction test: `tests/unit/test_devsecops_remediation.py`
+- Failing output (real, pasted):
+```text
+FAILED tests/unit/test_devsecops_remediation.py::test_reproduce_devsecops_files_exist
+AssertionError: Missing required DevSecOps files: ['.github\\dependabot.yml', '.pre-commit-config.yaml', 'CONTRIBUTING.md']
+FAILED tests/unit/test_devsecops_remediation.py::test_reproduce_ci_runs_pip_audit
+AssertionError: CI workflow must execute pip-audit
+FAILED tests/unit/test_devsecops_remediation.py::test_reproduce_dependabot_config_valid
+AssertionError: .github/dependabot.yml must exist
+FAILED tests/unit/test_devsecops_remediation.py::test_reproduce_pre_commit_config_valid
+AssertionError: .pre-commit-config.yaml must exist
+FAILED tests/unit/test_devsecops_remediation.py::test_reproduce_license_and_contributing_clarity
+AssertionError: CONTRIBUTING.md must exist
+============================== 5 failed in 0.10s ==============================
+```
+- Change summary (files, why):
+  - `.github/dependabot.yml`: Added automated weekly dependency vulnerability and version monitoring for both `pip` and `github-actions` ecosystems.
+  - `.pre-commit-config.yaml`: Configured pre-commit hooks for whitespace cleanup (`trailing-whitespace`), newline termination (`end-of-file-fixer`), YAML syntax validation (`check-yaml`), large file blocking (`check-added-large-files`), and `ruff` linting.
+  - `.github/workflows/ci.yml`: Added an automated `pip-audit` step to the CI test matrix to detect CVEs in third-party dependencies on pull requests and pushes.
+  - `pyproject.toml`: Added `pip-audit>=2.7.0` to the `dev` dependencies.
+  - `CONTRIBUTING.md`: Authored comprehensive contribution guidelines detailing development setup, forensic invariants, air-gap principles, verification commands (`pytest`, `ruff`, `pip-audit`), and conventional commit formats.
+  - `tests/unit/test_devsecops_remediation.py`: Added unit and adversarial tests verifying all DevSecOps files, CI pip-audit invocation, YAML tab/formatting hygiene, and dependency version bounds.
+- New test result (real, pasted):
+```text
+tests\unit\test_devsecops_remediation.py .......                         [100%]
+
+============================== 7 passed in 0.06s ==============================
+```
+- Full suite result (real, pasted, with counts):
+```text
+============================ 261 passed in 12.31s =============================
+```
+- Commit: PENDING
+- Status: DONE
+- Notes and surprises:
+  Dependency audits and automated PR dependency management were previously absent from the project lifecycle. Introducing `pip-audit` in CI and `.github/dependabot.yml` ensures forensic supply-chain vulnerabilities are detected before code enters production.
+
 ## Open questions for the human
 (only things the agent genuinely cannot decide)
 

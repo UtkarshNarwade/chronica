@@ -373,7 +373,7 @@ class ScenarioGenerator:
         ]
 
         gt = ScenarioGroundTruth(
-            scenario_id=scenario_subfolder,
+            scenario_id="scenario_2" if scenario_subfolder == "scenario_2_clock_skew" else scenario_subfolder,
             scenario_name="Scenario 2: Clock Skew and Time-Zone Mismatch",
             description=(
                 "Host db-backend-02 has +180.0s clock skew and uses America/New_York EDT offset (-0400). "

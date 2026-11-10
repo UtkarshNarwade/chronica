@@ -2,7 +2,7 @@
 
 **AIORI-3 Cybersecurity Problem Statement PS-013: Incident Timeline and Evidence Collection for Small Teams**
 
-[![Test Suite](https://img.shields.io/badge/pytest-254%20passed-brightgreen.svg)]()
+[![Test Suite](https://img.shields.io/badge/pytest-261%20passed-brightgreen.svg)]()
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.14-blue.svg)]()
 [![License](https://img.shields.io/badge/license-MIT-green.svg)]()
 [![Offline](https://img.shields.io/badge/operation-100%25%20offline-success.svg)]()
@@ -187,6 +187,7 @@ tests/unit/test_clock_skew_remediation.py (5 tests) PASSED
 tests/unit/test_correlation_remediation.py (3 tests) PASSED
 tests/unit/test_database_and_diagnostics_aggregation_remediation.py (7 tests) PASSED
 tests/unit/test_decoding_and_raw_text.py (5 tests) PASSED
+tests/unit/test_devsecops_remediation.py (7 tests) PASSED
 tests/unit/test_diagnostics.py (2 tests) PASSED
 tests/unit/test_exports.py (4 tests) PASSED
 tests/unit/test_hashing_and_manifest.py (8 tests) PASSED
@@ -208,7 +209,7 @@ tests/unit/test_syslog_real_samples.py (7 tests) PASSED
 tests/unit/test_tamper_lab_remediation.py (3 tests) PASSED
 tests/unit/test_web_and_firewall_parsers.py (10 tests) PASSED
 
-============================= 254 passed =============================
+============================= 261 passed =============================
 ```
 
 
