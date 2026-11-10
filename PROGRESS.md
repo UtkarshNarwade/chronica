@@ -702,6 +702,39 @@ tests/unit/test_backup_restore_and_cli_remediation.py::test_adversarial_restore_
 - Notes and surprises:
   The CLI previously always printed "[SUCCESS]" and returned exit code 0 even when it detected a hash mismatch ("FAILED (Integrity Mismatch)") or a severed chain of custody. Now it fails closed with exit code 1 whenever either check fails or whenever an unexpected error occurs during execution. In addition, the JSON export previously omitted evidence files and had no restore path; it is now a complete, restorable forensic backup bundle.
 
+### Iteration 21 | Finding: F-23 | Started: 2026-11-10T12:35:00+05:30
+- Reproduction test: `tests/unit/test_report_injection_remediation.py`
+- Failing output (real, pasted):
+```text
+FAILED tests/unit/test_report_injection_remediation.py::test_reproduce_markdown_export_escapes_images_and_html
+AssertionError: Active markdown image syntax '![' must be neutralized/escaped
+assert '![' not in '# Digital F.../iframe> |\n'
+FAILED tests/unit/test_report_injection_remediation.py::test_reproduce_csv_formula_injection_defense
+AssertionError: Expected '=..., got =1+1
+assert False
+where False = '=1+1'.startswith('\'=')
+============================== 2 failed in 0.28s ==============================
+```
+- Change summary (files, why):
+  - `src/reporting/csv_export.py`: Added `CSV_FORMULA_TRIGGERS` and `sanitize_csv_cell()` to prepend a single quote `'` to any cell beginning with formula triggers (`=`, `+`, `-`, `@`, `\t`, `\r`) or leading whitespace preceding a trigger, preventing DDE/formula execution when opened in Excel/LibreOffice. Preserved numeric types and normal text without quotes.
+  - `src/reporting/markdown_export.py`: Added `_sanitize_md_text()` to escape raw HTML tags (`<` to `&lt;`, `>` to `&gt;`), escape markdown image markers (`!` to `\!`), and escape brackets (`[` to `\[`, `]` to `\]`). Integrated `_sanitize_md_text()` into `_md_cell()` and all case metadata, filtering criteria, and investigator notes fields.
+  - `app.py`: Updated Live Report Preview in Module 9 to render markdown via `st.code(..., language="markdown")` rather than unescaped `st.markdown`, eliminating browser execution of HTML tags and image fetching in preview tabs.
+  - `tests/unit/test_report_injection_remediation.py`: Created unit tests reproducing both vulnerabilities, plus adversarial tests covering nested markdown images in links, SVG/onload payloads, base64 data URIs, leading-whitespace formula triggers, and CSV column round trips.
+- New test result (real, pasted):
+```text
+tests\unit\test_report_injection_remediation.py ....                     [100%]
+
+============================== 4 passed in 0.20s ==============================
+```
+- Full suite result (real, pasted, with counts):
+```text
+============================= 231 passed in 9.90s =============================
+```
+- Commit: c744651 fix(F-23): escape markdown image/HTML tags and sanitize CSV formula triggers
+- Status: DONE
+- Notes and surprises:
+  Raw markdown tables previously passed through unsanitized strings for description, notes, and tags, permitting `![beacon](http://...)` outbound SSRF/tracking image requests and phishing links. By neutralizing image and link brackets, HTML-escaping angle brackets, escaping CSV formula triggers, and rendering report previews using Streamlit's `st.code`, export and UI report inspection are protected against client-side execution.
+
 ## Open questions for the human
 (only things the agent genuinely cannot decide)
 

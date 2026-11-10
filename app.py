@@ -2360,7 +2360,7 @@ elif nav_section == "Forensic Reports & Export":
         st.markdown("<strong>Live Report Preview</strong>", unsafe_allow_html=True)
         prev_tab1, prev_tab2 = st.tabs(["Markdown Report Preview", "JSON Case Structure"])
         with prev_tab1:
-            st.markdown(md_text[:4000] + ("\n\n*... [Full report downloaded via button above]*" if len(md_text) > 4000 else ""))
+            st.code(md_text[:4000] + ("\n\n... [Full report downloaded via button above]" if len(md_text) > 4000 else ""), language="markdown")
         with prev_tab2:
             st.text(json_text[:2000] + ("\n... [Truncated for preview]" if len(json_text) > 2000 else ""))
 

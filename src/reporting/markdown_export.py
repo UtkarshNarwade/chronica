@@ -19,16 +19,36 @@ from src.timeline.schema import Event
 from src.timeline.search import FilterCriteria
 
 
+def _sanitize_md_text(val: Any) -> str:
+    """Sanitize untrusted text for safe rendering in Markdown documents.
+
+    Escapes raw HTML tags (< and >), neutralizes Markdown image syntax (![),
+    and escapes markdown links and square brackets to prevent outbound SSRF/beacons
+    and phishing link injection.
+    """
+    if val is None:
+        return ""
+    s = str(val)
+    # Neutralize HTML tags
+    s = s.replace("<", "&lt;").replace(">", "&gt;")
+    # Neutralize markdown image marker
+    s = s.replace("!", r"\!")
+    # Neutralize markdown links / brackets
+    s = s.replace("[", r"\[").replace("]", r"\]")
+    return s
+
+
 def _md_cell(val: Any) -> str:
     """Escape a value for safe use inside a Markdown table cell.
 
     Converts to string, collapses newlines/carriage returns to a space,
-    and escapes pipe characters to prevent table column breakage.
+    escapes pipe characters to prevent table column breakage, neutralizes
+    Markdown image/link markup, and escapes raw HTML tags.
     """
     s = str(val if val is not None else "")
     s = s.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
     s = s.replace("|", r"\|")
-    return s
+    return _sanitize_md_text(s)
 
 
 def export_markdown_report(
@@ -64,9 +84,9 @@ def export_markdown_report(
 
     # 1. Investigation Title and ID
     md.append(f"## 1. Investigation Overview")
-    md.append(f"- **Title:** {metadata.title}")
-    md.append(f"- **Investigation ID:** `{metadata.investigation_id}`")
-    md.append(f"- **Description:** {metadata.description or 'No case description provided.'}")
+    md.append(f"- **Title:** {_sanitize_md_text(metadata.title)}")
+    md.append(f"- **Investigation ID:** `{_sanitize_md_text(metadata.investigation_id)}`")
+    md.append(f"- **Description:** {_sanitize_md_text(metadata.description) if metadata.description else 'No case description provided.'}")
     md.append(f"- **Created At (UTC):** {metadata.created_at_utc}")
     md.append(f"- **Investigation Timezone Baseline:** `{metadata.assigned_timezone}`\n")
 
@@ -77,7 +97,7 @@ def export_markdown_report(
 
     # 3. Scope and Data Sources
     md.append(f"## 3. Scope and Data Sources")
-    sources = sorted(list({e.source_host or e.original_filename for e in events}))
+    sources = sorted(list({_sanitize_md_text(e.source_host or e.original_filename) for e in events}))
     md.append(f"- **Total Ingested Evidence Files:** {len(manifest.entries)}")
     md.append(f"- **Sources / Systems Encompassed:** {', '.join(sources) if sources else 'None'}")
     md.append(f"- **Investigation Mode:** {'Filtered Event Scope' if is_filtered else 'Complete Evidence Inventory'}\n")
@@ -216,12 +236,12 @@ def export_markdown_report(
     md.append(f"## 12. Search and Filtering Scope")
     if is_filtered:
         md.append(f"- **Scope:** Active Filter Criteria Applied")
-        md.append(f"- **Keyword:** `{filter_criteria.keyword or 'None'}`")
-        md.append(f"- **Host:** `{filter_criteria.source_host or 'All'}`")
-        md.append(f"- **User:** `{filter_criteria.username or 'All'}`")
-        md.append(f"- **IP:** `{filter_criteria.src_ip or 'All'}`")
-        md.append(f"- **Severity:** `{filter_criteria.severity or 'All'}`")
-        md.append(f"- **Time Range:** `{filter_criteria.start_time_iso or 'Start'} to {filter_criteria.end_time_iso or 'End'}`")
+        md.append(f"- **Keyword:** `{_sanitize_md_text(filter_criteria.keyword or 'None')}`")
+        md.append(f"- **Host:** `{_sanitize_md_text(filter_criteria.source_host or 'All')}`")
+        md.append(f"- **User:** `{_sanitize_md_text(filter_criteria.username or 'All')}`")
+        md.append(f"- **IP:** `{_sanitize_md_text(filter_criteria.src_ip or 'All')}`")
+        md.append(f"- **Severity:** `{_sanitize_md_text(filter_criteria.severity or 'All')}`")
+        md.append(f"- **Time Range:** `{_sanitize_md_text(filter_criteria.start_time_iso or 'Start')} to {_sanitize_md_text(filter_criteria.end_time_iso or 'End')}`")
     else:
         md.append(f"- **Scope:** Complete unfiltered investigation.")
     md.append("")
@@ -264,7 +284,8 @@ def export_markdown_report(
 
     # 16. Investigator Notes
     md.append(f"## 16. Investigator Observations & Case Notes")
-    md.append(metadata.notes if metadata.notes.strip() else "_No investigator notes entered for this case._")
+    notes_clean = _sanitize_md_text(metadata.notes)
+    md.append(notes_clean if notes_clean.strip() else "_No investigator notes entered for this case._")
     md.append("")
 
     # 17. Formal Forensic Disclaimer
