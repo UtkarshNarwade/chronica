@@ -1,0 +1,272 @@
+"""Evidence integrity verification engine.
+
+Re-hashes stored evidence files on disk and compares against cryptographic
+digests recorded in the manifest, detecting corruption or tampering.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from enum import Enum
+from pathlib import Path
+import tempfile
+from typing import Any, Dict, List, Optional, Union
+
+from src.evidence.hashing import calculate_sha256_file
+from src.evidence.manifest import EvidenceManifest
+
+
+class IntegrityStatus(str, Enum):
+    """Integrity evaluation states."""
+    VERIFIED = "VERIFIED"                  # Hash matches recorded manifest digest
+    MISMATCH = "MISMATCH"                  # Hash differs: corruption or tampering detected
+    UNAVAILABLE = "UNAVAILABLE"            # File missing or permission error
+    NOT_YET_VERIFIED = "NOT_YET_VERIFIED"  # Untested
+
+
+@dataclass
+class VerificationResult:
+    """Detailed verification record for a single evidence file."""
+    evidence_id: str
+    original_filename: str
+    stored_path: str
+    status: IntegrityStatus
+    recorded_sha256: str
+    calculated_sha256: Optional[str]
+    verification_time_utc: str
+    details: str
+    forensic_limitation_notice: str = (
+        "Forensic Limitation: A matching hash proves byte-for-byte integrity since "
+        "the time of collection. It does not establish that the log was authentic, "
+        "that system clocks were accurate, or that alteration did not occur prior to collection."
+    )
+
+    @property
+    def is_intact(self) -> bool:
+        return self.status == IntegrityStatus.VERIFIED
+
+    @property
+    def verified_at_utc(self) -> str:
+        return self.verification_time_utc
+
+
+@dataclass
+class InvestigationIntegritySummary:
+    """Summary of evidence verification across all files in an investigation."""
+    investigation_id: str
+    verification_time_utc: str
+    total_files: int
+    verified_files: int
+    mismatched_files: int
+    unavailable_files: int
+    results: List[VerificationResult]
+
+    @property
+    def all_verified(self) -> bool:
+        return self.total_files > 0 and self.verified_files == self.total_files
+
+
+def verify_file_integrity(
+    file_path: Union[str, Path],
+    recorded_sha256: str,
+    evidence_id: str = "unknown",
+    original_filename: str = "",
+) -> VerificationResult:
+    """Verify integrity of a single evidence file against a recorded digest."""
+    path = Path(file_path)
+    now_utc = datetime.now(timezone.utc).isoformat()
+
+    if not path.is_file():
+        return VerificationResult(
+            evidence_id=evidence_id,
+            original_filename=original_filename or path.name,
+            stored_path=str(path),
+            status=IntegrityStatus.UNAVAILABLE,
+            recorded_sha256=recorded_sha256,
+            calculated_sha256=None,
+            verification_time_utc=now_utc,
+            details=f"Evidence file cannot be found at: {path}",
+        )
+
+    try:
+        calculated = calculate_sha256_file(path)
+    except Exception as exc:
+        return VerificationResult(
+            evidence_id=evidence_id,
+            original_filename=original_filename or path.name,
+            stored_path=str(path),
+            status=IntegrityStatus.UNAVAILABLE,
+            recorded_sha256=recorded_sha256,
+            calculated_sha256=None,
+            verification_time_utc=now_utc,
+            details=f"Error reading evidence file: {exc}",
+        )
+
+    if calculated.lower() == recorded_sha256.lower():
+        return VerificationResult(
+            evidence_id=evidence_id,
+            original_filename=original_filename or path.name,
+            stored_path=str(path),
+            status=IntegrityStatus.VERIFIED,
+            recorded_sha256=recorded_sha256,
+            calculated_sha256=calculated,
+            verification_time_utc=now_utc,
+            details="Cryptographic SHA-256 digest matches preserved baseline.",
+        )
+    else:
+        return VerificationResult(
+            evidence_id=evidence_id,
+            original_filename=original_filename or path.name,
+            stored_path=str(path),
+            status=IntegrityStatus.MISMATCH,
+            recorded_sha256=recorded_sha256,
+            calculated_sha256=calculated,
+            verification_time_utc=now_utc,
+            details=(
+                f"INTEGRITY VIOLATION DETECTED! Computed SHA-256 ({calculated}) "
+                f"differs from baseline ({recorded_sha256}). File may have been altered."
+            ),
+        )
+
+
+def verify_evidence_integrity(
+    evidence_dir: Union[str, Path],
+    manifest: EvidenceManifest,
+    ledger: Optional[Any] = None,
+) -> InvestigationIntegritySummary:
+    """Verify all evidence files recorded in an investigation manifest, and verify manifest against audit ledger."""
+    base_dir = Path(evidence_dir)
+    results: List[VerificationResult] = []
+    now_utc = datetime.now(timezone.utc).isoformat()
+
+    # 1. Verify manifest against audit ledger if ledger is available
+    if ledger is not None:
+        entries = ledger.list_entries()
+        latest_manifest_sha = None
+        for entry in reversed(entries):
+            m_sha = entry.details.get("manifest_sha256")
+            if m_sha:
+                latest_manifest_sha = m_sha
+                break
+
+        if latest_manifest_sha is not None:
+            actual_manifest_sha = manifest.calculate_manifest_digest()
+            manifest_file_path = str(base_dir.parent / "manifest.json")
+            if actual_manifest_sha.lower() == latest_manifest_sha.lower():
+                results.append(
+                    VerificationResult(
+                        evidence_id="__manifest__",
+                        original_filename="manifest.json",
+                        stored_path=manifest_file_path,
+                        status=IntegrityStatus.VERIFIED,
+                        recorded_sha256=latest_manifest_sha,
+                        calculated_sha256=actual_manifest_sha,
+                        verification_time_utc=now_utc,
+                        details="Manifest SHA-256 matches anchored audit ledger digest.",
+                    )
+                )
+            else:
+                results.append(
+                    VerificationResult(
+                        evidence_id="__manifest__",
+                        original_filename="manifest.json",
+                        stored_path=manifest_file_path,
+                        status=IntegrityStatus.MISMATCH,
+                        recorded_sha256=latest_manifest_sha,
+                        calculated_sha256=actual_manifest_sha,
+                        verification_time_utc=now_utc,
+                        details=(
+                            f"MANIFEST INTEGRITY VIOLATION DETECTED! Computed manifest SHA-256 "
+                            f"({actual_manifest_sha}) differs from anchored audit ledger digest "
+                            f"({latest_manifest_sha}). The manifest or evidence catalog has been altered."
+                        ),
+                    )
+                )
+
+    # 2. Verify individual evidence files
+    for entry in manifest.entries:
+        target_path = base_dir / entry.stored_filename
+        res = verify_file_integrity(
+            file_path=target_path,
+            recorded_sha256=entry.sha256_digest,
+            evidence_id=entry.evidence_id,
+            original_filename=entry.original_filename,
+        )
+        results.append(res)
+
+    verified = sum(1 for r in results if r.status == IntegrityStatus.VERIFIED)
+    mismatched = sum(1 for r in results if r.status == IntegrityStatus.MISMATCH)
+    unavailable = sum(1 for r in results if r.status == IntegrityStatus.UNAVAILABLE)
+
+    return InvestigationIntegritySummary(
+        investigation_id=manifest.investigation_id,
+        verification_time_utc=now_utc,
+        total_files=len(results),
+        verified_files=verified,
+        mismatched_files=mismatched,
+        unavailable_files=unavailable,
+        results=results,
+    )
+
+
+def simulate_isolated_tamper_check(
+    stored_path: Union[str, Path],
+    recorded_sha256: str,
+    evidence_id: str = "unknown",
+    original_filename: str = "",
+) -> Dict[str, Any]:
+    """Perform a non-destructive tamper simulation on an ephemeral sandbox copy.
+
+    Never modifies, renames, or touches the stored evidence file.
+    Proves that a 1-bit or 1-byte alteration in the evidence stream is
+    immediately and unmistakably detected by SHA-256 verification.
+    """
+    orig_path = Path(stored_path)
+    if not orig_path.is_file():
+        raise FileNotFoundError(f"Original evidence file not found: {orig_path}")
+
+    # 1. Baseline verification on original pristine evidence
+    baseline_result = verify_file_integrity(
+        file_path=orig_path,
+        recorded_sha256=recorded_sha256,
+        evidence_id=evidence_id,
+        original_filename=original_filename,
+    )
+
+    # 2. Perform alteration on ephemeral throwaway copy
+    with tempfile.TemporaryDirectory(prefix="chronica_tamper_sim_") as tmp_dir:
+        temp_copy = Path(tmp_dir) / orig_path.name
+        temp_copy.write_bytes(orig_path.read_bytes())
+
+        data = bytearray(temp_copy.read_bytes())
+        if data:
+            data[0] ^= 0x01
+        else:
+            data = bytearray(b"\x01")
+        temp_copy.write_bytes(data)
+
+        tampered_result = verify_file_integrity(
+            file_path=temp_copy,
+            recorded_sha256=recorded_sha256,
+            evidence_id=evidence_id,
+            original_filename=original_filename,
+        )
+
+    # 3. Post-simulation verification confirming original file is completely unaltered
+    post_check = verify_file_integrity(
+        file_path=orig_path,
+        recorded_sha256=recorded_sha256,
+        evidence_id=evidence_id,
+        original_filename=original_filename,
+    )
+
+    return {
+        "baseline": baseline_result,
+        "tampered_copy": tampered_result,
+        "original_post_check": post_check,
+        "original_unaltered": (
+            baseline_result.calculated_sha256 is not None
+            and baseline_result.calculated_sha256 == post_check.calculated_sha256
+        ),
+    }

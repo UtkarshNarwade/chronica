@@ -1,0 +1,152 @@
+{
+  "scenario_id": "scenario_1",
+  "scenario_name": "Scenario 1: Clean Baseline",
+  "description": "Multi-tier clean baseline log collection demonstrating normal timeline reconstruction.",
+  "reference_source": "web_access.log",
+  "known_clock_offsets_sec": {
+    "srv-app-01": 0.0
+  },
+  "known_timezones": {
+    "web_access.log": "UTC",
+    "srv-app-01": "UTC"
+  },
+  "expected_events": [
+    {
+      "ground_truth_id": "gt_1_1",
+      "expected_order_index": 1,
+      "true_utc_iso": "2026-10-12T10:00:01.000000Z",
+      "source_identifier": "web_access.log",
+      "expected_raw_pattern": "GET /login",
+      "expected_request_id": "req-sec1-001",
+      "expected_severity": "INFO",
+      "expected_category": "SYSTEM",
+      "is_anomaly": false,
+      "anomaly_type": null
+    },
+    {
+      "ground_truth_id": "gt_1_2",
+      "expected_order_index": 2,
+      "true_utc_iso": "2026-10-12T10:00:05.000000Z",
+      "source_identifier": "web_access.log",
+      "expected_raw_pattern": "POST /api/v1/auth",
+      "expected_request_id": "req-sec1-002",
+      "expected_severity": "INFO",
+      "expected_category": "SYSTEM",
+      "is_anomaly": false,
+      "anomaly_type": null
+    },
+    {
+      "ground_truth_id": "gt_1_3",
+      "expected_order_index": 3,
+      "true_utc_iso": "2026-10-12T10:00:06.120000Z",
+      "source_identifier": "srv-app-01",
+      "expected_raw_pattern": "user_login_success",
+      "expected_request_id": "req-sec1-002",
+      "expected_severity": "INFO",
+      "expected_category": "SYSTEM",
+      "is_anomaly": false,
+      "anomaly_type": null
+    },
+    {
+      "ground_truth_id": "gt_1_4",
+      "expected_order_index": 4,
+      "true_utc_iso": "2026-10-12T10:00:10.000000Z",
+      "source_identifier": "srv-app-01",
+      "expected_raw_pattern": "Accepted publickey for alice",
+      "expected_request_id": null,
+      "expected_severity": "INFO",
+      "expected_category": "SYSTEM",
+      "is_anomaly": false,
+      "anomaly_type": null
+    },
+    {
+      "ground_truth_id": "gt_1_5",
+      "expected_order_index": 5,
+      "true_utc_iso": "2026-10-12T10:00:11.000000Z",
+      "source_identifier": "srv-app-01",
+      "expected_raw_pattern": "session opened for user alice",
+      "expected_request_id": null,
+      "expected_severity": "INFO",
+      "expected_category": "SYSTEM",
+      "is_anomaly": false,
+      "anomaly_type": null
+    },
+    {
+      "ground_truth_id": "gt_1_6",
+      "expected_order_index": 6,
+      "true_utc_iso": "2026-10-12T10:00:15.000000Z",
+      "source_identifier": "web_access.log",
+      "expected_raw_pattern": "GET /dashboard",
+      "expected_request_id": "req-sec1-003",
+      "expected_severity": "INFO",
+      "expected_category": "SYSTEM",
+      "is_anomaly": false,
+      "anomaly_type": null
+    },
+    {
+      "ground_truth_id": "gt_1_7",
+      "expected_order_index": 7,
+      "true_utc_iso": "2026-10-12T10:00:16.050000Z",
+      "source_identifier": "srv-app-01",
+      "expected_raw_pattern": "dashboard_view",
+      "expected_request_id": "req-sec1-003",
+      "expected_severity": "INFO",
+      "expected_category": "SYSTEM",
+      "is_anomaly": false,
+      "anomaly_type": null
+    },
+    {
+      "ground_truth_id": "gt_1_8",
+      "expected_order_index": 8,
+      "true_utc_iso": "2026-10-12T10:00:30.000000Z",
+      "source_identifier": "srv-app-01",
+      "expected_raw_pattern": "COMMAND=/usr/bin/systemctl",
+      "expected_request_id": null,
+      "expected_severity": "INFO",
+      "expected_category": "SYSTEM",
+      "is_anomaly": false,
+      "anomaly_type": null
+    },
+    {
+      "ground_truth_id": "gt_1_9",
+      "expected_order_index": 9,
+      "true_utc_iso": "2026-10-12T10:01:00.000000Z",
+      "source_identifier": "web_access.log",
+      "expected_raw_pattern": "POST /api/v1/reports",
+      "expected_request_id": "req-sec1-004",
+      "expected_severity": "INFO",
+      "expected_category": "SYSTEM",
+      "is_anomaly": false,
+      "anomaly_type": null
+    },
+    {
+      "ground_truth_id": "gt_1_10",
+      "expected_order_index": 10,
+      "true_utc_iso": "2026-10-12T10:01:01.300000Z",
+      "source_identifier": "srv-app-01",
+      "expected_raw_pattern": "report_generated",
+      "expected_request_id": "req-sec1-004",
+      "expected_severity": "INFO",
+      "expected_category": "SYSTEM",
+      "is_anomaly": false,
+      "anomaly_type": null
+    },
+    {
+      "ground_truth_id": "gt_1_11",
+      "expected_order_index": 11,
+      "true_utc_iso": "2026-10-12T10:01:20.000000Z",
+      "source_identifier": "srv-app-01",
+      "expected_raw_pattern": "session closed for user alice",
+      "expected_request_id": null,
+      "expected_severity": "INFO",
+      "expected_category": "SYSTEM",
+      "is_anomaly": false,
+      "anomaly_type": null
+    }
+  ],
+  "expected_coverage_gaps": [],
+  "expected_diagnostics_count": {
+    "A_PARSE_FAILURE": 0,
+    "H_EVIDENCE_INTEGRITY_ISSUE": 0
+  }
+}

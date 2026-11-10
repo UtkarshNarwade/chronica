@@ -1,0 +1,301 @@
+"""Quantitative benchmark metrics evaluating Chronica against synthetic ground truth."""
+
+from __future__ import annotations
+
+import math
+from dataclasses import asdict, dataclass
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+from src.diagnostics.gap_analysis import ParsingCoverageStats
+from src.evaluation.ground_truth import GroundTruthEvent, ScenarioGroundTruth
+from src.timeline.clock_skew import ClockSkewEstimate
+from src.timeline.schema import Event
+
+
+@dataclass
+class SkewEvaluationMetric:
+    """Quantitative evaluation of clock skew estimation accuracy."""
+    target_source: str
+    known_ground_truth_offset_sec: float
+    estimated_offset_sec: Optional[float]
+    absolute_estimation_error_sec: Optional[float]
+    estimation_status: str
+    pre_correction_mean_abs_error_sec: Optional[float] = None
+    pre_correction_median_abs_error_sec: Optional[float] = None
+    pre_correction_p95_abs_error_sec: Optional[float] = None
+    pre_correction_max_abs_error_sec: Optional[float] = None
+    post_correction_mean_abs_error_sec: Optional[float] = None
+    post_correction_median_abs_error_sec: Optional[float] = None
+    post_correction_p95_abs_error_sec: Optional[float] = None
+    post_correction_max_abs_error_sec: Optional[float] = None
+
+
+@dataclass
+class OrderingEvaluationMetric:
+    """Pairwise ordering and ranking accuracy metrics."""
+    total_comparable_pairs: int
+    concordant_pairs: int
+    inverted_pairs: int
+    tied_pairs: int
+    pairwise_ordering_accuracy_percent: float
+    kendall_tau: float
+    excluded_records_count: int
+    explanation_of_exclusions: str
+
+
+@dataclass
+class CompleteEvaluationReport:
+    """Comprehensive benchmark evaluation summarizing all 4 measurable axes."""
+    scenario_id: str
+    scenario_name: str
+    evaluation_time_utc: str
+    coverage_stats: ParsingCoverageStats
+    skew_metrics: Dict[str, SkewEvaluationMetric]
+    ordering_metric_normalized: OrderingEvaluationMetric
+    ordering_metric_corrected: Optional[OrderingEvaluationMetric]
+    overall_findings: List[str]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "scenario_id": self.scenario_id,
+            "scenario_name": self.scenario_name,
+            "evaluation_time_utc": self.evaluation_time_utc,
+            "coverage_stats": self.coverage_stats.to_dict(),
+            "skew_metrics": {k: asdict(v) for k, v in self.skew_metrics.items()},
+            "ordering_metric_normalized": asdict(self.ordering_metric_normalized),
+            "ordering_metric_corrected": asdict(self.ordering_metric_corrected) if self.ordering_metric_corrected else None,
+            "overall_findings": self.overall_findings,
+        }
+
+
+class BenchmarkEvaluator:
+    """Evaluates Chronica's output against scenario ground truth."""
+
+    @staticmethod
+    def _matches_ground_truth(ev: Event, gt: GroundTruthEvent) -> bool:
+        """Check if a reconstructed event matches a ground-truth event.
+
+        Performs tri-part matching:
+        1. Source identifier match (source_host, original_filename, or source_app)
+        2. Raw text pattern match
+        3. Request ID match (if specified in ground truth)
+
+        Returns True only if ALL applicable conditions are satisfied.
+        """
+        # Check source match
+        ev_sources = {s for s in (ev.source_host, ev.original_filename, ev.source_app) if s}
+        source_matches = (
+            gt.source_identifier in ev_sources
+            or (gt.expected_raw_pattern in ev.raw_text and ev.source_host is None)
+        )
+        if not source_matches:
+            return False
+
+        # Check raw text pattern match
+        if gt.expected_raw_pattern not in ev.raw_text:
+            return False
+
+        # Check request_id match (if specified in ground truth)
+        if gt.expected_request_id is not None:
+            if ev.request_id != gt.expected_request_id:
+                return False
+
+        return True
+
+    @staticmethod
+    def evaluate_clock_skew(
+        ground_truth: ScenarioGroundTruth,
+        skew_estimates: Dict[str, ClockSkewEstimate],
+        events: List[Event],
+        filename_to_host: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, SkewEvaluationMetric]:
+        """Compute clock-skew offset estimation errors and pre/post correction timing residuals.
+
+        Uses _matches_ground_truth() for 1-to-1 event matching (each reconstructed event
+        can be paired with at most one ground-truth event).
+        """
+        results: Dict[str, SkewEvaluationMetric] = {}
+        if filename_to_host is None:
+            filename_to_host = {}
+
+        for host, true_offset in ground_truth.known_clock_offsets_sec.items():
+            # Resolve host via filename_to_host mapping if needed
+            resolved_host = filename_to_host.get(host, host)
+            est = skew_estimates.get(resolved_host) or skew_estimates.get(host)
+            est_offset = est.estimated_offset_sec if est and est.status == "ESTIMATED" else None
+            abs_err = round(abs(est_offset - true_offset), 4) if est_offset is not None else None
+            status = est.status if est else "NOT_ANALYZED"
+
+            # Calculate pre- and post-correction timing error for events from this host
+            host_events = [
+                e for e in events
+                if (e.source_host or e.original_filename) in (host, resolved_host)
+                and e.normalized_utc_iso
+            ]
+
+            # Map events to ground truth using strict 1-to-1 matching
+            pre_errors: List[float] = []
+            post_errors: List[float] = []
+            matched_event_ids: Set[str] = set()
+
+            for gt in ground_truth.expected_events:
+                if gt.source_identifier not in (host, resolved_host):
+                    continue
+
+                matched_ev = None
+                for ev in host_events:
+                    if ev.event_id in matched_event_ids:
+                        continue  # Already paired
+                    if BenchmarkEvaluator._matches_ground_truth(ev, gt):
+                        matched_ev = ev
+                        break
+
+                if matched_ev and gt.true_utc_iso:
+                    matched_event_ids.add(matched_ev.event_id)
+                    true_dt = datetime.fromisoformat(gt.true_utc_iso.replace("Z", "+00:00")).timestamp()
+                    norm_dt = datetime.fromisoformat(matched_ev.normalized_utc_iso.replace("Z", "+00:00")).timestamp()
+                    pre_errors.append(abs(norm_dt - true_dt))
+
+                    if matched_ev.corrected_utc_iso:
+                        corr_dt = datetime.fromisoformat(matched_ev.corrected_utc_iso.replace("Z", "+00:00")).timestamp()
+                        post_errors.append(abs(corr_dt - true_dt))
+
+            def _calc_stats(errs: List[float]) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float]]:
+                if not errs:
+                    return None, None, None, None
+                s = sorted(errs)
+                n = len(s)
+                mean_val = round(sum(s) / n, 3)
+                if n % 2 == 1:
+                    med_val = round(s[n // 2], 3)
+                else:
+                    med_val = round((s[n // 2 - 1] + s[n // 2]) / 2.0, 3)
+                p95_idx = int(math.ceil(0.95 * n)) - 1
+                p95_val = round(s[max(0, min(n - 1, p95_idx))], 3)
+                max_val = round(s[-1], 3)
+                return mean_val, med_val, p95_val, max_val
+
+            pre_mean, pre_med, pre_p95, pre_max = _calc_stats(pre_errors)
+            post_mean, post_med, post_p95, post_max = _calc_stats(post_errors)
+
+            results[host] = SkewEvaluationMetric(
+                target_source=host,
+                known_ground_truth_offset_sec=true_offset,
+                estimated_offset_sec=est_offset,
+                absolute_estimation_error_sec=abs_err,
+                estimation_status=status,
+                pre_correction_mean_abs_error_sec=pre_mean,
+                pre_correction_median_abs_error_sec=pre_med,
+                pre_correction_p95_abs_error_sec=pre_p95,
+                pre_correction_max_abs_error_sec=pre_max,
+                post_correction_mean_abs_error_sec=post_mean,
+                post_correction_median_abs_error_sec=post_med,
+                post_correction_p95_abs_error_sec=post_p95,
+                post_correction_max_abs_error_sec=post_max,
+            )
+
+        return results
+
+    @staticmethod
+    def evaluate_event_ordering(
+        reconstructed_events: List[Event],
+        ground_truth: ScenarioGroundTruth,
+        use_corrected_timestamps: bool = False,
+    ) -> OrderingEvaluationMetric:
+        """Calculate pairwise concordance and Kendall's tau against ground-truth order.
+
+        Uses strict 1-to-1 matching via _matches_ground_truth() to prevent the same
+        reconstructed event being paired with multiple ground-truth entries (fixes the
+        shared-request-ID gateway/backend ambiguity).
+        """
+        # Align reconstructed events with ground truth expected events
+        aligned_pairs: List[Tuple[int, float]] = []  # (gt_expected_order, reconstructed_timestamp_epoch)
+        excluded_count = 0
+        matched_event_ids: Set[str] = set()
+
+        for gt_ev in ground_truth.expected_events:
+            # Exclude deliberate anomalies that lack a valid ground truth timestamp
+            if gt_ev.is_anomaly and gt_ev.anomaly_type in ("MALFORMED", "INVALID_TS"):
+                excluded_count += 1
+                continue
+
+            matched_ev = None
+            for rev in reconstructed_events:
+                if rev.event_id in matched_event_ids:
+                    continue  # Already paired
+                if BenchmarkEvaluator._matches_ground_truth(rev, gt_ev):
+                    matched_ev = rev
+                    break
+
+            if matched_ev:
+                matched_event_ids.add(matched_ev.event_id)
+                ts_str = (
+                    matched_ev.corrected_utc_iso if use_corrected_timestamps else matched_ev.normalized_utc_iso
+                ) or matched_ev.normalized_utc_iso
+
+                if ts_str:
+                    try:
+                        epoch = datetime.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp()
+                        aligned_pairs.append((gt_ev.expected_order_index, epoch))
+                    except Exception:
+                        excluded_count += 1
+                else:
+                    excluded_count += 1
+            else:
+                excluded_count += 1
+
+        n = len(aligned_pairs)
+        if n < 2:
+            return OrderingEvaluationMetric(
+                total_comparable_pairs=0,
+                concordant_pairs=0,
+                inverted_pairs=0,
+                tied_pairs=0,
+                pairwise_ordering_accuracy_percent=100.0,
+                kendall_tau=1.0,
+                excluded_records_count=excluded_count,
+                explanation_of_exclusions="Fewer than 2 comparable events found.",
+            )
+
+        concordant = 0
+        inverted = 0
+        tied = 0
+        total_pairs = 0
+
+        for i in range(n):
+            for j in range(i + 1, n):
+                gt_i, rec_i = aligned_pairs[i]
+                gt_j, rec_j = aligned_pairs[j]
+
+                # Ensure gt_i < gt_j
+                if gt_i > gt_j:
+                    gt_i, gt_j = gt_j, gt_i
+                    rec_i, rec_j = rec_j, rec_i
+
+                total_pairs += 1
+                if rec_i < rec_j:
+                    concordant += 1
+                elif rec_i > rec_j:
+                    inverted += 1
+                else:
+                    tied += 1
+
+        accuracy = round((concordant / total_pairs) * 100.0, 2) if total_pairs > 0 else 100.0
+        # Kendall's tau = (concordant - inverted) / sqrt((total)*(total - tied))
+        denom = math.sqrt(total_pairs * (total_pairs - tied)) if (total_pairs - tied) > 0 else total_pairs
+        tau = round((concordant - inverted) / denom, 3) if denom > 0 else 1.0
+
+        return OrderingEvaluationMetric(
+            total_comparable_pairs=total_pairs,
+            concordant_pairs=concordant,
+            inverted_pairs=inverted,
+            tied_pairs=tied,
+            pairwise_ordering_accuracy_percent=accuracy,
+            kendall_tau=tau,
+            excluded_records_count=excluded_count,
+            explanation_of_exclusions=(
+                f"{excluded_count} record(s) excluded from pairwise evaluation: "
+                "deliberately corrupted lines, unparseable timestamps, or events lacking ground-truth temporal sequence."
+            ),
+        )
