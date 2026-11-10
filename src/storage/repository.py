@@ -50,8 +50,9 @@ class InvestigationMetadata:
 class InvestigationRepository:
     """Repository handling filesystem and database operations for forensic investigations."""
 
-    def __init__(self, data_root: Union[str, Path]) -> None:
+    def __init__(self, data_root: Union[str, Path], auth_file: Optional[Path] = None) -> None:
         self.data_root = Path(data_root)
+        self.auth_file = auth_file
         self.investigations_dir = self.data_root / "investigations"
         self.investigations_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.data_root / "chronica.db"
@@ -190,8 +191,16 @@ class InvestigationRepository:
         tombstones_dir = self.data_root / "tombstones"
         return AuditChainLedger(tombstones_dir, db_path=self.db_path)
 
-    def delete_investigation(self, investigation_id: str, delete_evidence_files: bool = True) -> None:
+    def delete_investigation(
+        self,
+        investigation_id: str,
+        delete_evidence_files: bool = True,
+        passphrase: Optional[str] = None,
+    ) -> None:
         """Delete an investigation, its SQLite events, and its filesystem directory, recording a durable tombstone."""
+        from src.security.passphrase_gate import check_destructive_action_authorized
+
+        check_destructive_action_authorized("delete_investigation", passphrase, self.auth_file)
         inv_dir = self._get_inv_dir(investigation_id)
 
         # 1. Capture final audit ledger state if available

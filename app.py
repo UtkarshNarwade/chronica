@@ -46,6 +46,7 @@ from src.reporting.csv_export import export_timeline_csv
 from src.reporting.json_export import export_investigation_json
 from src.reporting.markdown_export import export_markdown_report
 from src.reporting.pdf_export import export_pdf_report
+from src.security.passphrase_gate import clear_passphrase, is_passphrase_configured, set_passphrase, verify_passphrase
 from src.storage.repository import InvestigationMetadata, InvestigationRepository
 from src.timeline.clock_skew import AnchorPair, ClockSkewAnalyzer, ClockSkewEstimate, SIGN_CONVENTION_DOC
 from src.timeline.correlation import EventCorrelator
@@ -2599,19 +2600,48 @@ elif nav_section == "Workspace & System Specs":
     with mg_c2:
         st.markdown("<strong>Manage Existing Workspaces</strong>", unsafe_allow_html=True)
         st.markdown(f"Current Active: <strong>{html_lib.escape(str(active_inv.title))}</strong> [<code>{html_lib.escape(str(active_inv.investigation_id))}</code>]", unsafe_allow_html=True)
+        gate_active = is_passphrase_configured()
+        del_pass = None
+        if gate_active:
+            del_pass = st.text_input("Authorization Passphrase", type="password", key="del_case_pass_in", help="Required when local passphrase gate is active.")
         if st.button("Delete Active Investigation", key="delete_case_btn"):
             del_id = active_inv.investigation_id
-            repo.delete_investigation(del_id)
-            remaining = repo.list_investigations()
-            if remaining:
-                st.session_state.active_investigation_id = remaining[0].investigation_id
-            else:
-                repo.create_investigation("case_default", "Operation ChronoShield", assigned_timezone="UTC")
-                st.session_state.active_investigation_id = "case_default"
-            if "pipeline_cache" in st.session_state:
-                del st.session_state["pipeline_cache"]
-            st.warning(f"Deleted investigation '{del_id}'.")
-            st.rerun()
+            try:
+                repo.delete_investigation(del_id, passphrase=del_pass)
+                remaining = repo.list_investigations()
+                if remaining:
+                    st.session_state.active_investigation_id = remaining[0].investigation_id
+                else:
+                    repo.create_investigation("case_default", "Operation ChronoShield", assigned_timezone="UTC")
+                    st.session_state.active_investigation_id = "case_default"
+                if "pipeline_cache" in st.session_state:
+                    del st.session_state["pipeline_cache"]
+                st.warning(f"Deleted investigation '{del_id}'.")
+                st.rerun()
+            except PermissionError as pe:
+                st.error(str(pe))
+
+        st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+        st.markdown("<strong>Local Passphrase Security Gate</strong>", unsafe_allow_html=True)
+        if gate_active:
+            st.success("🔒 Passphrase Gate Active (Destructive actions gated)")
+            clear_p = st.text_input("Current Passphrase to Disable", type="password", key="clear_gate_pass_in")
+            if st.button("Disable Passphrase Gate", key="clear_gate_btn"):
+                if clear_passphrase(clear_p):
+                    st.success("Passphrase gate removed.")
+                    st.rerun()
+                else:
+                    st.error("Incorrect passphrase.")
+        else:
+            st.info("🔓 Passphrase Gate Inactive (Destructive actions unrestricted)")
+            new_p = st.text_input("Set Security Passphrase", type="password", key="set_gate_pass_in")
+            if st.button("Enable Passphrase Gate", key="set_gate_btn"):
+                if new_p and new_p.strip():
+                    set_passphrase(new_p.strip())
+                    st.success("Passphrase gate enabled.")
+                    st.rerun()
+                else:
+                    st.warning("Please provide a non-empty passphrase.")
 
     st.markdown("---")
     st.markdown("<strong>System Architecture & Forensic Defensibility</strong>", unsafe_allow_html=True)

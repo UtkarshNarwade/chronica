@@ -30,8 +30,14 @@ def export_investigation_json(
     audit_entries: Optional[List[Any]] = None,
     include_evidence_bytes: bool = True,
     repo: Optional[InvestigationRepository] = None,
+    passphrase: Optional[str] = None,
+    auth_file: Optional[Path] = None,
 ) -> str:
     """Generate a comprehensive JSON representation of the investigation."""
+    from src.security.passphrase_gate import check_destructive_action_authorized
+
+    effective_auth = auth_file or (repo.auth_file if repo else None)
+    check_destructive_action_authorized("export_investigation", passphrase, effective_auth)
     if coverage_stats is None:
         coverage_stats = ParsingCoverageStats(
             total_records_encountered=len(events),
@@ -117,6 +123,8 @@ def export_investigation_json(
 def restore_investigation_from_json(
     json_str_or_data: Union[str, Dict[str, Any]],
     repo: InvestigationRepository,
+    passphrase: Optional[str] = None,
+    auth_file: Optional[Path] = None,
 ) -> InvestigationMetadata:
     """Restore an investigation from a full structured JSON backup.
 
@@ -128,6 +136,10 @@ def restore_investigation_from_json(
     - Audit chain-of-custody ledger with head anchor restoration
     - Appends an audited INVESTIGATION_RESTORED action
     """
+    from src.security.passphrase_gate import check_destructive_action_authorized
+
+    effective_auth = auth_file or repo.auth_file
+    check_destructive_action_authorized("restore_investigation", passphrase, effective_auth)
     if isinstance(json_str_or_data, str):
         data = json.loads(json_str_or_data)
     else:

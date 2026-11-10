@@ -735,6 +735,36 @@ tests\unit\test_report_injection_remediation.py ....                     [100%]
 - Notes and surprises:
   Raw markdown tables previously passed through unsanitized strings for description, notes, and tags, permitting `![beacon](http://...)` outbound SSRF/tracking image requests and phishing links. By neutralizing image and link brackets, HTML-escaping angle brackets, escaping CSV formula triggers, and rendering report previews using Streamlit's `st.code`, export and UI report inspection are protected against client-side execution.
 
+### Iteration 22 | Finding: F-10 | Started: 2026-11-10T12:42:00+05:30
+- Reproduction test: `tests/unit/test_passphrase_gate_and_security_remediation.py`
+- Failing output (real, pasted):
+```text
+FAILED tests/unit/test_passphrase_gate_and_security_remediation.py
+ModuleNotFoundError: No module named 'src.security'
+============================== 1 error in 0.37s ===============================
+```
+- Change summary (files, why):
+  - Created `src/security/passphrase_gate.py`: Implemented local passphrase gate using salted PBKDF2-HMAC-SHA256 (100,000 iterations, 16-byte cryptographically secure random salt) and constant-time verification (`hmac.compare_digest`). Provided `check_destructive_action_authorized()`, `set_passphrase()`, `verify_passphrase()`, and `clear_passphrase()`.
+  - `src/storage/repository.py`: Integrated `auth_file` and authorization check into `InvestigationRepository.delete_investigation()`, raising `PermissionError` when destructive deletion is attempted without valid passphrase.
+  - `src/reporting/json_export.py`: Gated `export_investigation_json()` and `restore_investigation_from_json()` through `check_destructive_action_authorized()`.
+  - `app.py`: Integrated passphrase gate prompt into Module 11 ("Manage Existing Workspaces") for case deletion and added a "Local Passphrase Security Gate" management panel allowing analysts to activate, verify, or disable the security gate.
+  - `SECURITY.md`: Authored comprehensive project threat model documenting 127.0.0.1 default binding, STRIDE analysis, offline air-gap controls, salted KDF passphrase gate, and vulnerability reporting guidelines.
+  - `tests/unit/test_passphrase_gate_and_security_remediation.py`: Created reproduction and adversarial tests for salted KDF verification, destructive action gating (delete, export, restore), empty passphrase rejection, secure clearing, and corrupted auth file fail-closed behavior.
+- New test result (real, pasted):
+```text
+tests\unit\test_passphrase_gate_and_security_remediation.py .....        [100%]
+
+============================== 5 passed in 0.72s ==============================
+```
+- Full suite result (real, pasted, with counts):
+```text
+============================ 236 passed in 14.91s =============================
+```
+- Commit: b40bb21 fix(F-10): salted KDF passphrase gate for destructive actions, loopback binding, and SECURITY.md threat model
+- Status: DONE
+- Notes and surprises:
+  The application previously had no gate for destructive actions, allowing immediate deletion or export. The new `src/security/passphrase_gate.py` enforces salted PBKDF2-HMAC-SHA256 authorization when configured, while remaining completely optional and frictionless for single-user triage when unconfigured.
+
 ## Open questions for the human
 (only things the agent genuinely cannot decide)
 
