@@ -697,7 +697,7 @@ tests/unit/test_backup_restore_and_cli_remediation.py::test_adversarial_restore_
 ```text
 ============================= 227 passed in 9.10s =============================
 ```
-- Commit: pending
+- Commit: e2dce0f fix(F-19): full JSON backup round-trip, audit-logged exports, and non-zero CLI failure exit
 - Status: DONE
 - Notes and surprises:
   The CLI previously always printed "[SUCCESS]" and returned exit code 0 even when it detected a hash mismatch ("FAILED (Integrity Mismatch)") or a severed chain of custody. Now it fails closed with exit code 1 whenever either check fails or whenever an unexpected error occurs during execution. In addition, the JSON export previously omitted evidence files and had no restore path; it is now a complete, restorable forensic backup bundle.
