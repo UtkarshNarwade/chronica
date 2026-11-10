@@ -6,9 +6,13 @@ calibrated clock skews, and documented ground-truth answer keys stored separatel
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import json
+import math
 from pathlib import Path
-from typing import Dict, List, Tuple
+import random
+import re
+from typing import Any, Dict, List, Optional, Tuple
 
 from src.evaluation.ground_truth import GroundTruthEvent, ScenarioGroundTruth
 
@@ -37,6 +41,124 @@ class ScenarioGenerator:
             "scenario_2": s2,
             "scenario_3": s3,
         }
+
+    def inject_evidence_noise(
+        self,
+        lines: List[str],
+        jitter_std_sec: float = 0.0,
+        drift_ppm: float = 0.0,
+        packet_loss_rate: float = 0.0,
+        duplicate_rate: float = 0.0,
+        out_of_order_prob: float = 0.0,
+        seed: Optional[int] = None,
+    ) -> Tuple[List[str], Dict[str, Any]]:
+        """Inject realistic network and timing noise into log lines.
+
+        Applies:
+        - Jitter: Gaussian timing jitter added to timestamps.
+        - Drift: Linear clock drift accumulated across records.
+        - Packet Loss: Randomly drops lines (network/logging loss).
+        - Duplicates: Randomly duplicates lines (e.g. retransmission/retry).
+        - Out-of-Order: Randomly transposes adjacent records (async flushing).
+        """
+        rng = random.Random(seed)
+        processed: List[str] = []
+        stats: Dict[str, Any] = {
+            "original_count": len(lines),
+            "jitter_applied": 0,
+            "drift_applied": 0,
+            "lines_dropped": 0,
+            "duplicates_added": 0,
+            "transpositions": 0,
+        }
+
+        # Timestamp regexes
+        iso_pattern = re.compile(r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?)(Z|[+-]\d{2}:?\d{2})')
+        nginx_pattern = re.compile(r'\[(\d{2}/\w{3}/\d{4}:\d{2}:\d{2}:\d{2}) ([+-]\d{4})\]')
+
+        for idx, line in enumerate(lines):
+            # Packet loss check
+            if packet_loss_rate > 0.0 and rng.random() < packet_loss_rate:
+                stats["lines_dropped"] += 1
+                continue
+
+            current_line = line
+            # Compute timing adjustment
+            jitter = rng.gauss(0.0, jitter_std_sec) if jitter_std_sec > 0.0 else 0.0
+            drift = (idx * 60.0) * (drift_ppm / 1e6) if drift_ppm != 0.0 else 0.0
+            shift_sec = jitter + drift
+
+            if shift_sec != 0.0:
+                # Try ISO replacement
+                iso_match = iso_pattern.search(current_line)
+                if iso_match:
+                    try:
+                        base_str = iso_match.group(1)
+                        tz_str = iso_match.group(2)
+                        full_ts = f"{base_str}{tz_str}"
+                        dt = datetime.fromisoformat(full_ts)
+                        shifted_dt = dt + timedelta(seconds=shift_sec)
+                        new_ts = shifted_dt.isoformat(timespec="milliseconds")
+                        current_line = current_line[:iso_match.start()] + new_ts + current_line[iso_match.end():]
+                        if jitter_std_sec > 0.0:
+                            stats["jitter_applied"] += 1
+                        if drift_ppm != 0.0:
+                            stats["drift_applied"] += 1
+                    except Exception:
+                        pass
+                else:
+                    # Try Nginx replacement
+                    nginx_match = nginx_pattern.search(current_line)
+                    if nginx_match:
+                        try:
+                            ts_str = f"{nginx_match.group(1)} {nginx_match.group(2)}"
+                            dt = datetime.strptime(ts_str, "%d/%b/%Y:%H:%M:%S %z")
+                            shifted_dt = dt + timedelta(seconds=shift_sec)
+                            new_ts = f"[{shifted_dt.strftime('%d/%b/%Y:%H:%M:%S %z')}]"
+                            current_line = current_line[:nginx_match.start()] + new_ts + current_line[nginx_match.end():]
+                            if jitter_std_sec > 0.0:
+                                stats["jitter_applied"] += 1
+                            if drift_ppm != 0.0:
+                                stats["drift_applied"] += 1
+                        except Exception:
+                            pass
+
+            processed.append(current_line)
+
+            # Duplicates check
+            if duplicate_rate > 0.0 and rng.random() < duplicate_rate:
+                processed.append(current_line)
+                stats["duplicates_added"] += 1
+
+        # Out-of-order transposition
+        if out_of_order_prob > 0.0 and len(processed) > 1:
+            for i in range(len(processed) - 1):
+                if rng.random() < out_of_order_prob:
+                    processed[i], processed[i + 1] = processed[i + 1], processed[i]
+                    stats["transpositions"] += 1
+
+        stats["final_count"] = len(processed)
+        return processed, stats
+
+    def generate_noisy_scenario(
+        self,
+        jitter_std_sec: float = 0.25,
+        drift_ppm: float = 50.0,
+        packet_loss_rate: float = 0.0,
+        duplicate_rate: float = 0.0,
+        out_of_order_prob: float = 0.0,
+        seed: int = 42,
+    ) -> Tuple[Path, Path]:
+        """Generate Scenario 2 with realistic noise (jitter, drift, transpositions)."""
+        return self.generate_scenario_2(
+            jitter_std_sec=jitter_std_sec,
+            drift_ppm=drift_ppm,
+            packet_loss_rate=packet_loss_rate,
+            duplicate_rate=duplicate_rate,
+            out_of_order_prob=out_of_order_prob,
+            seed=seed,
+            scenario_subfolder="scenario_2_noisy_clock_skew",
+        )
 
     def generate_scenario_1(self) -> Tuple[Path, Path]:
         """Scenario 1: Clean Baseline.
@@ -139,7 +261,16 @@ class ScenarioGenerator:
 
         return scen_dir, gt_path
 
-    def generate_scenario_2(self) -> Tuple[Path, Path]:
+    def generate_scenario_2(
+        self,
+        jitter_std_sec: float = 0.0,
+        drift_ppm: float = 0.0,
+        packet_loss_rate: float = 0.0,
+        duplicate_rate: float = 0.0,
+        out_of_order_prob: float = 0.0,
+        seed: Optional[int] = None,
+        scenario_subfolder: str = "scenario_2_clock_skew",
+    ) -> Tuple[Path, Path]:
         """Scenario 2: Clock Skew and Time-Zone Mismatch.
         
         Host A: Web gateway (`edge-gateway.local`), Reference clock at true UTC.
@@ -154,7 +285,7 @@ class ScenarioGenerator:
         Without clock-skew correction, Host B operations appear to take place 3 minutes
         after they finished or out of sequence with downstream logs!
         """
-        scen_dir = self.scenarios_dir / "scenario_2_clock_skew"
+        scen_dir = self.scenarios_dir / scenario_subfolder
         scen_dir.mkdir(parents=True, exist_ok=True)
 
         # Host A (Reference): Web access log (edge_gateway.log)
@@ -217,6 +348,16 @@ class ScenarioGenerator:
                 "message": "Session sess-bob-881 closed by client.",
             }),
         ]
+        if jitter_std_sec > 0.0 or drift_ppm != 0.0 or packet_loss_rate > 0.0 or duplicate_rate > 0.0 or out_of_order_prob > 0.0:
+            db_lines, _ = self.inject_evidence_noise(
+                lines=db_lines,
+                jitter_std_sec=jitter_std_sec,
+                drift_ppm=drift_ppm,
+                packet_loss_rate=packet_loss_rate,
+                duplicate_rate=duplicate_rate,
+                out_of_order_prob=out_of_order_prob,
+                seed=seed,
+            )
         (scen_dir / "db_backend.jsonl").write_text("\n".join(db_lines) + "\n", encoding="utf-8")
 
         # Ground Truth Answer Key
@@ -232,7 +373,7 @@ class ScenarioGenerator:
         ]
 
         gt = ScenarioGroundTruth(
-            scenario_id="scenario_2",
+            scenario_id=scenario_subfolder,
             scenario_name="Scenario 2: Clock Skew and Time-Zone Mismatch",
             description=(
                 "Host db-backend-02 has +180.0s clock skew and uses America/New_York EDT offset (-0400). "
@@ -244,7 +385,10 @@ class ScenarioGenerator:
             expected_events=gt_events,
             expected_diagnostics_count={"G_UNRESOLVED_CLOCK_SKEW": 0},
         )
-        gt_path = self.definitions_dir / "scenario_2_ground_truth.json"
+        if scenario_subfolder == "scenario_2_clock_skew":
+            gt_path = self.definitions_dir / "scenario_2_ground_truth.json"
+        else:
+            gt_path = self.definitions_dir / f"{scenario_subfolder}_ground_truth.json"
         gt.save_to_file(gt_path)
 
         return scen_dir, gt_path

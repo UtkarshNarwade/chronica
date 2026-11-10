@@ -2,7 +2,7 @@
 
 **AIORI-3 Cybersecurity Problem Statement PS-013: Incident Timeline and Evidence Collection for Small Teams**
 
-[![Test Suite](https://img.shields.io/badge/pytest-127%20passed-brightgreen.svg)]()
+[![Test Suite](https://img.shields.io/badge/pytest-254%20passed-brightgreen.svg)]()
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.14-blue.svg)]()
 [![License](https://img.shields.io/badge/license-MIT-green.svg)]()
 [![Offline](https://img.shields.io/badge/operation-100%25%20offline-success.svg)]()
@@ -174,19 +174,41 @@ python -m pytest -v
 ### Verified Test Summary:
 ```text
 tests/end_to_end/test_scenarios_e2e.py (3 tests) PASSED
+tests/end_to_end/test_ui_app.py (2 tests) PASSED
 tests/integration/test_investigation_lifecycle.py (1 test) PASSED
 tests/integration/test_tamper_detection.py (1 test) PASSED
-tests/unit/test_clock_skew.py (7 tests) PASSED
+tests/unit/test_archive_bomb_remediation.py (6 tests) PASSED
+tests/unit/test_atomic_ingest_remediation.py (6 tests) PASSED
+tests/unit/test_audit_chain_remediation.py (7 tests) PASSED
+tests/unit/test_auditd_real_samples.py (4 tests) PASSED
+tests/unit/test_backup_restore_and_cli_remediation.py (6 tests) PASSED
+tests/unit/test_clock_skew.py (9 tests) PASSED
+tests/unit/test_clock_skew_remediation.py (5 tests) PASSED
+tests/unit/test_correlation_remediation.py (3 tests) PASSED
+tests/unit/test_database_and_diagnostics_aggregation_remediation.py (7 tests) PASSED
+tests/unit/test_decoding_and_raw_text.py (5 tests) PASSED
 tests/unit/test_diagnostics.py (2 tests) PASSED
 tests/unit/test_exports.py (4 tests) PASSED
 tests/unit/test_hashing_and_manifest.py (8 tests) PASSED
-tests/unit/test_new_parsers_and_features.py (33 tests) PASSED
+tests/unit/test_heuristics_remediation.py (6 tests) PASSED
+tests/unit/test_manifest_verification_remediation.py (6 tests) PASSED
+tests/unit/test_new_parsers_and_features.py (54 tests) PASSED
 tests/unit/test_normalization.py (9 tests) PASSED
+tests/unit/test_normalization_remediation.py (8 tests) PASSED
+tests/unit/test_packaging_and_config.py (7 tests) PASSED
 tests/unit/test_parsers.py (9 tests) PASSED
+tests/unit/test_passphrase_gate_and_security_remediation.py (5 tests) PASSED
+tests/unit/test_performance_heuristics_remediation.py (5 tests) PASSED
+tests/unit/test_readme_and_synthetic_jitter_remediation.py (6 tests) PASSED
+tests/unit/test_report_injection_remediation.py (4 tests) PASSED
 tests/unit/test_search_and_filter.py (5 tests) PASSED
+tests/unit/test_search_cql_remediation.py (9 tests) PASSED
 tests/unit/test_security_and_escaping.py (22 tests) PASSED
+tests/unit/test_syslog_real_samples.py (7 tests) PASSED
+tests/unit/test_tamper_lab_remediation.py (3 tests) PASSED
+tests/unit/test_web_and_firewall_parsers.py (10 tests) PASSED
 
-============================= 104 passed in 0.81s =============================
+============================= 254 passed =============================
 ```
 
 

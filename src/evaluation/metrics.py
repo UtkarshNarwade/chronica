@@ -22,7 +22,13 @@ class SkewEvaluationMetric:
     absolute_estimation_error_sec: Optional[float]
     estimation_status: str
     pre_correction_mean_abs_error_sec: Optional[float] = None
+    pre_correction_median_abs_error_sec: Optional[float] = None
+    pre_correction_p95_abs_error_sec: Optional[float] = None
+    pre_correction_max_abs_error_sec: Optional[float] = None
     post_correction_mean_abs_error_sec: Optional[float] = None
+    post_correction_median_abs_error_sec: Optional[float] = None
+    post_correction_p95_abs_error_sec: Optional[float] = None
+    post_correction_max_abs_error_sec: Optional[float] = None
 
 
 @dataclass
@@ -155,8 +161,23 @@ class BenchmarkEvaluator:
                         corr_dt = datetime.fromisoformat(matched_ev.corrected_utc_iso.replace("Z", "+00:00")).timestamp()
                         post_errors.append(abs(corr_dt - true_dt))
 
-            pre_mean = round(sum(pre_errors) / len(pre_errors), 3) if pre_errors else None
-            post_mean = round(sum(post_errors) / len(post_errors), 3) if post_errors else None
+            def _calc_stats(errs: List[float]) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float]]:
+                if not errs:
+                    return None, None, None, None
+                s = sorted(errs)
+                n = len(s)
+                mean_val = round(sum(s) / n, 3)
+                if n % 2 == 1:
+                    med_val = round(s[n // 2], 3)
+                else:
+                    med_val = round((s[n // 2 - 1] + s[n // 2]) / 2.0, 3)
+                p95_idx = int(math.ceil(0.95 * n)) - 1
+                p95_val = round(s[max(0, min(n - 1, p95_idx))], 3)
+                max_val = round(s[-1], 3)
+                return mean_val, med_val, p95_val, max_val
+
+            pre_mean, pre_med, pre_p95, pre_max = _calc_stats(pre_errors)
+            post_mean, post_med, post_p95, post_max = _calc_stats(post_errors)
 
             results[host] = SkewEvaluationMetric(
                 target_source=host,
@@ -165,7 +186,13 @@ class BenchmarkEvaluator:
                 absolute_estimation_error_sec=abs_err,
                 estimation_status=status,
                 pre_correction_mean_abs_error_sec=pre_mean,
+                pre_correction_median_abs_error_sec=pre_med,
+                pre_correction_p95_abs_error_sec=pre_p95,
+                pre_correction_max_abs_error_sec=pre_max,
                 post_correction_mean_abs_error_sec=post_mean,
+                post_correction_median_abs_error_sec=post_med,
+                post_correction_p95_abs_error_sec=post_p95,
+                post_correction_max_abs_error_sec=post_max,
             )
 
         return results

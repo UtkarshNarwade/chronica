@@ -125,8 +125,8 @@ def run_evaluation(
                     print(f"           Abs Error:        {sm.absolute_estimation_error_sec if sm.absolute_estimation_error_sec is not None else 'N/A'}s")
                     print(f"           Status:           {sm.estimation_status}")
                     if sm.pre_correction_mean_abs_error_sec is not None:
-                        print(f"           Pre-Correction Timing Residual:  {sm.pre_correction_mean_abs_error_sec:.2f}s")
-                        print(f"           Post-Correction Timing Residual: {sm.post_correction_mean_abs_error_sec:.2f}s")
+                        print(f"           Pre-Correction Timing Residuals:  mean={sm.pre_correction_mean_abs_error_sec:.2f}s, med={sm.pre_correction_median_abs_error_sec:.2f}s, p95={sm.pre_correction_p95_abs_error_sec:.2f}s, max={sm.pre_correction_max_abs_error_sec:.2f}s")
+                        print(f"           Post-Correction Timing Residuals: mean={sm.post_correction_mean_abs_error_sec:.2f}s, med={sm.post_correction_median_abs_error_sec:.2f}s, p95={sm.post_correction_p95_abs_error_sec:.2f}s, max={sm.post_correction_max_abs_error_sec:.2f}s")
 
                 print(f"     [C] Event Ordering Concordance:")
                 print(f"         Normalized (Uncorrected) Order Accuracy: {ordering_norm.pairwise_ordering_accuracy_percent}% (Kendall's Tau: {ordering_norm.kendall_tau})")

@@ -849,6 +849,41 @@ tests\unit\test_database_and_diagnostics_aggregation_remediation.py .... [ 57%]
 - Notes and surprises:
   In Python's standard `sqlite3`, using `with conn:` only manages a transaction, not the connection lifecycle itself, so connections remained open until garbage collection. Implementing `@contextmanager def connection()` with a `finally: conn.close()` block prevents file lock retention on Windows. When enabling `PRAGMA foreign_keys = ON`, `restore_investigation_from_json` needed to ensure the parent investigation record existed before child evidence files were inserted.
 
+### Iteration 25 | Finding: F-21 | Started: 2026-11-10T13:12:00+05:30
+- Reproduction test: `tests/unit/test_readme_and_synthetic_jitter_remediation.py`
+- Failing output (real, pasted):
+```text
+FAILED tests/unit/test_readme_and_synthetic_jitter_remediation.py::test_reproduce_readme_test_counts_inconsistency
+AssertionError: README.md contains stale '104 passed' summary
+FAILED tests/unit/test_readme_and_synthetic_jitter_remediation.py::test_reproduce_synthetic_generator_supports_jitter_drift_loss_duplicates
+AssertionError: ScenarioGenerator must provide methods to inject jitter, drift, packet loss, duplicates, and out-of-order records
+FAILED tests/unit/test_readme_and_synthetic_jitter_remediation.py::test_reproduce_skew_metrics_reports_error_distribution
+AssertionError: Must report median error
+FAILED tests/unit/test_readme_and_synthetic_jitter_remediation.py::test_skew_metrics_calculates_percentiles_correctly
+AttributeError: 'SkewEvaluationMetric' object has no attribute 'post_correction_median_abs_error_sec'. Did you mean: 'post_correction_mean_abs_error_sec'?
+============================== 4 failed in 0.19s ==============================
+```
+- Change summary (files, why):
+  - `src/evaluation/metrics.py`: Extended `SkewEvaluationMetric` with error distribution metrics: `pre_correction_median_abs_error_sec`, `pre_correction_p95_abs_error_sec`, `pre_correction_max_abs_error_sec`, `post_correction_median_abs_error_sec`, `post_correction_p95_abs_error_sec`, and `post_correction_max_abs_error_sec`. Updated `BenchmarkEvaluator.evaluate_clock_skew` to compute full error distribution percentiles on timing residuals.
+  - `src/evaluation/runner.py`: Updated benchmark CLI reporting to output comprehensive error distribution statistics (mean, median, p95, max) for both pre- and post-correction residuals.
+  - `synthetic_data/generator.py`: Implemented `inject_evidence_noise()` supporting Gaussian timing jitter (`jitter_std_sec`), linear drift (`drift_ppm`), packet loss rate (`packet_loss_rate`), duplicates (`duplicate_rate`), and out-of-order log transpositions (`out_of_order_prob`). Added `generate_noisy_scenario()` and parameterized `generate_scenario_2()`.
+  - `scripts/sync_test_metrics.py`: Created automated script to introspect pytest test collection and update `README.md` badge (`pytest-254 passed`), Section 6 test summary table, `docs/limitations.md`, and `docs/testing.md` dynamically from real test runs.
+  - `tests/unit/test_readme_and_synthetic_jitter_remediation.py`: Added comprehensive unit and adversarial tests covering README synchronization, noise injection edge cases (100% loss, non-timestamped lines, 100% duplicate rate), and percentile computations on empty/degraded sets.
+- New test result (real, pasted):
+```text
+tests\unit\test_readme_and_synthetic_jitter_remediation.py ......        [100%]
+
+============================== 6 passed in 0.13s ==============================
+```
+- Full suite result (real, pasted, with counts):
+```text
+============================ 254 passed in 12.18s =============================
+```
+- Commit: PENDING
+- Status: DONE
+- Notes and surprises:
+  The synthetic benchmark previously tested a single deterministic offset without noise, yielding an artificial 0.0s error that demonstrated code execution rather than algorithmic resilience. By adding `inject_evidence_noise()` and percentile error distributions (`median`, `p95`, `max`) into `BenchmarkEvaluator` and `scripts/sync_test_metrics.py` to keep documentation metrics synchronized with the full suite, claims of test counts and timing accuracy are verified against reality.
+
 ## Open questions for the human
 (only things the agent genuinely cannot decide)
 
