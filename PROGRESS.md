@@ -765,6 +765,53 @@ tests\unit\test_passphrase_gate_and_security_remediation.py .....        [100%]
 - Notes and surprises:
   The application previously had no gate for destructive actions, allowing immediate deletion or export. The new `src/security/passphrase_gate.py` enforces salted PBKDF2-HMAC-SHA256 authorization when configured, while remaining completely optional and frictionless for single-user triage when unconfigured.
 
+### Iteration 23 | Finding: F-04 | Started: 2026-11-10T12:48:00+05:30
+- Reproduction test: `tests/unit/test_performance_heuristics_remediation.py`
+- Failing output (real, pasted):
+```text
+FAILED tests/unit/test_performance_heuristics_remediation.py::test_reproduce_event_cached_epoch_parsing
+AssertionError: Event must provide effective_epoch property
+FAILED tests/unit/test_performance_heuristics_remediation.py::test_reproduce_heuristics_sliding_window_scaling
+AssertionError: Expected 6000 events to analyze in under 0.35s, took 6.230s
+FAILED tests/unit/test_performance_heuristics_remediation.py::test_reproduce_bench_script_exists
+AssertionError: scripts/bench.py must exist
+============================== 3 failed in 6.42s ==============================
+```
+- Change summary (files, why):
+  - `src/timeline/schema.py`: Added cached properties `normalized_epoch`, `corrected_epoch`, and `effective_epoch` to `Event`, caching parsed Unix timestamp floats and eliminating repeated `datetime.fromisoformat()` parsing across timeline analysis.
+  - `src/diagnostics/heuristics.py`: Refactored `_detect_privilege_escalation` and `_detect_sensitive_data_export` to pre-filter candidate events in O(N) single-pass regex evaluation and use binary search (`bisect.bisect_right`) to slice temporal windows in O(log N + k), replacing the previous quadratic O(A * N) nested scans.
+  - `src/diagnostics/heuristics.py`: Optimized `_detect_brute_force` to use `bisect.bisect_left` over precomputed group epochs.
+  - `scripts/bench.py`: Created automated performance benchmark script generating synthetic workloads across 2k, 4k, 8k, 20k, and 100k events, printing performance and throughput metrics.
+  - `tests/unit/test_performance_heuristics_remediation.py`: Added unit and adversarial tests covering cached epoch evaluation, sub-0.35s 6k event analysis, script existence, missing/corrupted timestamp robustness, and zero-auth early exit.
+- New test result (real, pasted):
+```text
+tests\unit\test_performance_heuristics_remediation.py .....              [100%]
+
+============================== 5 passed in 0.24s ==============================
+```
+- Full suite result (real, pasted, with counts):
+```text
+============================ 241 passed in 14.61s =============================
+```
+- Benchmark results (real, measured table from `scripts/bench.py`):
+```text
+================================================================================
+CHRONICA FORENSIC HEURISTIC ENGINE BENCHMARK (F-04)
+================================================================================
+    Events |   Analysis Time |         Throughput |    Leads |     Status
+--------------------------------------------------------------------------------
+     2,000 |         0.036s |         55,945 ev/s |       40 | PASS (<60s)
+     4,000 |         0.075s |         53,454 ev/s |       80 | PASS (<60s)
+     8,000 |         0.154s |         51,994 ev/s |      160 | PASS (<60s)
+    20,000 |         0.498s |         40,193 ev/s |      400 | PASS (<60s)
+   100,000 |         8.990s |         11,123 ev/s |     2000 | PASS (<60s)
+================================================================================
+```
+- Commit: a27ea48 fix(F-04): cached event epochs, sliding-window heuristics, and bench script for 100k events in <9s
+- Status: DONE
+- Notes and surprises:
+  The quadratic bottleneck in `_detect_sensitive_data_export` and `_detect_privilege_escalation` was caused by running full regex searches across all N events for every authentication event (A * N regex invocations) while repeatedly re-parsing the same ISO timestamp strings. Pre-filtering matching candidates in O(N) once and using `bisect` for the temporal window reduced 100k event analysis time down to 8.99s, far exceeding the 60s benchmark requirement.
+
 ## Open questions for the human
 (only things the agent genuinely cannot decide)
 

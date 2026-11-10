@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import asdict, dataclass, field
+from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
@@ -71,6 +72,41 @@ class Event:
     @property
     def actor(self) -> Optional[str]:
         return self.username
+
+    @property
+    def normalized_epoch(self) -> Optional[float]:
+        if getattr(self, "_cached_norm_iso", None) != self.normalized_utc_iso:
+            object.__setattr__(self, "_cached_norm_iso", self.normalized_utc_iso)
+            if not self.normalized_utc_iso:
+                object.__setattr__(self, "_cached_norm_epoch", None)
+            else:
+                try:
+                    epoch = datetime.fromisoformat(self.normalized_utc_iso.replace("Z", "+00:00")).timestamp()
+                    object.__setattr__(self, "_cached_norm_epoch", epoch)
+                except Exception:
+                    object.__setattr__(self, "_cached_norm_epoch", None)
+        return getattr(self, "_cached_norm_epoch", None)
+
+    @property
+    def corrected_epoch(self) -> Optional[float]:
+        if getattr(self, "_cached_corr_iso", None) != self.corrected_utc_iso:
+            object.__setattr__(self, "_cached_corr_iso", self.corrected_utc_iso)
+            if not self.corrected_utc_iso:
+                object.__setattr__(self, "_cached_corr_epoch", None)
+            else:
+                try:
+                    epoch = datetime.fromisoformat(self.corrected_utc_iso.replace("Z", "+00:00")).timestamp()
+                    object.__setattr__(self, "_cached_corr_epoch", epoch)
+                except Exception:
+                    object.__setattr__(self, "_cached_corr_epoch", None)
+        return getattr(self, "_cached_corr_epoch", None)
+
+    @property
+    def effective_epoch(self) -> Optional[float]:
+        corr = self.corrected_epoch
+        if corr is not None:
+            return corr
+        return self.normalized_epoch
 
 
     @classmethod

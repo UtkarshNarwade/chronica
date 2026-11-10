@@ -14,6 +14,7 @@ Each finding includes MITRE ATT&CK tactic mapping and all involved event IDs.
 
 from __future__ import annotations
 
+import bisect
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -88,6 +89,10 @@ def _parse_epoch(ts_iso: Optional[str]) -> Optional[float]:
 
 def _event_effective_epoch(ev: Any) -> Optional[float]:
     """Parse the effective event timestamp (corrected UTC preferred, falling back to normalized UTC)."""
+    if hasattr(ev, "effective_epoch"):
+        ep = ev.effective_epoch
+        if ep is not None:
+            return ep
     ts = getattr(ev, "corrected_utc_iso", None) or getattr(ev, "normalized_utc_iso", None)
     return _parse_epoch(ts)
 
@@ -126,7 +131,7 @@ class ForensicHeuristicEngine:
         # Sort events by effective timestamp (corrected preferred, then normalized)
         sorted_events = sorted(
             events,
-            key=lambda e: (getattr(e, "corrected_utc_iso", None) or getattr(e, "normalized_utc_iso", None) or ""),
+            key=lambda e: (_event_effective_epoch(e) or float("-inf")),
         )
 
         leads.extend(self._detect_brute_force(sorted_events))
@@ -155,21 +160,21 @@ class ForensicHeuristicEngine:
                 groups.setdefault(key, []).append(ev)
 
         for key, group_events in groups.items():
+            group_epochs = [(_event_effective_epoch(e) or -1.0) for e in group_events]
             # Look for windows with >= MIN_FAIL_COUNT AUTH_FAIL then AUTH_SUCCESS
             for i, ev in enumerate(group_events):
                 if ev.severity != "AUTH_SUCCESS":
                     continue
-                success_epoch = _event_effective_epoch(ev)
-                if success_epoch is None:
+                success_epoch = group_epochs[i]
+                if success_epoch < 0:
                     continue
 
-                # Count AUTH_FAIL events in the preceding window
+                # Count AUTH_FAIL events in the preceding window using bisect
                 window_start = success_epoch - self.BRUTE_FORCE_WINDOW_SEC
+                start_idx = bisect.bisect_left(group_epochs, window_start, 0, i)
                 preceding_fails = [
-                    e for e in group_events[:i]
+                    e for e in group_events[start_idx:i]
                     if e.severity == "AUTH_FAIL"
-                    and _event_effective_epoch(e) is not None
-                    and (_event_effective_epoch(e) or 0) >= window_start
                 ]
 
                 if len(preceding_fails) >= self.MIN_FAIL_COUNT:
@@ -213,6 +218,30 @@ class ForensicHeuristicEngine:
         WINDOW_SEC = 600  # 10 minutes
 
         auth_events = [e for e in events if e.severity in ("AUTH_SUCCESS",)]
+        if not auth_events:
+            return leads
+
+        # Pre-filter candidate privilege events once in O(N) to avoid O(A * N) regex searches
+        priv_candidates: List[Any] = []
+        for ev in events:
+            combined = f"{ev.raw_text} {ev.description}"
+            is_match = False
+            if PRIV_ESC_KEYWORDS.search(combined):
+                is_match = True
+            else:
+                event_id_val = ev.extra_fields.get("event_id") or ev.extra_fields.get("EventID")
+                try:
+                    if event_id_val is not None and int(event_id_val) == 4672:
+                        is_match = True
+                except (ValueError, TypeError):
+                    pass
+            if is_match:
+                priv_candidates.append(ev)
+
+        if not priv_candidates:
+            return leads
+
+        candidate_epochs = [(_event_effective_epoch(e) or -1.0) for e in priv_candidates]
         covered_priv_event_ids: set = set()
 
         for auth_ev in auth_events:
@@ -224,10 +253,12 @@ class ForensicHeuristicEngine:
             auth_user = auth_ev.username
 
             window_end = auth_epoch + WINDOW_SEC
+            start_idx = bisect.bisect_right(candidate_epochs, auth_epoch)
+            end_idx = bisect.bisect_right(candidate_epochs, window_end)
             priv_events = []
-            for ev in events:
-                ev_epoch = _event_effective_epoch(ev)
-                if ev_epoch is None or ev_epoch <= auth_epoch or ev_epoch > window_end:
+
+            for ev in priv_candidates[start_idx:end_idx]:
+                if ev.event_id in covered_priv_event_ids:
                     continue
 
                 ev_host = ev.source_host or ev.original_filename
@@ -240,24 +271,7 @@ class ForensicHeuristicEngine:
                 elif auth_user and ev_user and auth_user == ev_user:
                     is_linked = True
 
-                if not is_linked:
-                    continue
-
-                if ev.event_id in covered_priv_event_ids:
-                    continue
-
-                combined = f"{ev.raw_text} {ev.description}"
-                is_match = False
-                if PRIV_ESC_KEYWORDS.search(combined):
-                    is_match = True
-                event_id_val = ev.extra_fields.get("event_id") or ev.extra_fields.get("EventID")
-                try:
-                    if event_id_val is not None and int(event_id_val) == 4672:
-                        is_match = True
-                except (ValueError, TypeError):
-                    pass
-
-                if is_match:
+                if is_linked:
                     priv_events.append(ev)
 
             if priv_events:
@@ -300,6 +314,27 @@ class ForensicHeuristicEngine:
         WINDOW_SEC = 1800  # 30 minutes
 
         auth_events = [e for e in events if e.severity == "AUTH_SUCCESS"]
+        if not auth_events:
+            return leads
+
+        # Pre-filter candidate export events once in O(N) to avoid O(A * N) regex searches
+        export_candidates: List[Any] = []
+        for ev in events:
+            combined = f"{ev.raw_text} {ev.description}"
+            is_large_response = False
+            response_bytes = ev.extra_fields.get("response_bytes") or ev.extra_fields.get("bytes_sent") or ev.extra_fields.get("response_size")
+            if response_bytes:
+                try:
+                    is_large_response = int(response_bytes) > 10000
+                except (ValueError, TypeError):
+                    pass
+            if is_large_response or EXPORT_KEYWORDS.search(combined):
+                export_candidates.append(ev)
+
+        if not export_candidates:
+            return leads
+
+        candidate_epochs = [(_event_effective_epoch(e) or -1.0) for e in export_candidates]
         covered_exp_event_ids: set = set()
 
         for auth_ev in auth_events:
@@ -311,10 +346,12 @@ class ForensicHeuristicEngine:
             auth_user = auth_ev.username
 
             window_end = auth_epoch + WINDOW_SEC
+            start_idx = bisect.bisect_right(candidate_epochs, auth_epoch)
+            end_idx = bisect.bisect_right(candidate_epochs, window_end)
             export_events = []
-            for ev in events:
-                ev_epoch = _event_effective_epoch(ev)
-                if ev_epoch is None or ev_epoch <= auth_epoch or ev_epoch > window_end:
+
+            for ev in export_candidates[start_idx:end_idx]:
+                if ev.event_id in covered_exp_event_ids:
                     continue
 
                 ev_host = ev.source_host or ev.original_filename
@@ -326,21 +363,7 @@ class ForensicHeuristicEngine:
                 elif auth_user and ev_user and auth_user == ev_user:
                     is_linked = True
 
-                if not is_linked:
-                    continue
-
-                if ev.event_id in covered_exp_event_ids:
-                    continue
-
-                combined = f"{ev.raw_text} {ev.description}"
-                is_large_response = False
-                response_bytes = ev.extra_fields.get("response_bytes") or ev.extra_fields.get("bytes_sent") or ev.extra_fields.get("response_size")
-                if response_bytes:
-                    try:
-                        is_large_response = int(response_bytes) > 10000
-                    except (ValueError, TypeError):
-                        pass
-                if EXPORT_KEYWORDS.search(combined) or is_large_response:
+                if is_linked:
                     export_events.append(ev)
 
             if export_events:
@@ -358,11 +381,9 @@ class ForensicHeuristicEngine:
                     severity="HIGH",
                     title=f"Possible Data Export by '{user}' following authentication",
                     explanation=(
-                        f"[INVESTIGATIVE LEAD] User '{user}' authenticated and within "
-                        f"{WINDOW_SEC // 60} minutes performed operations matching export/dump/backup "
-                        f"keywords or transferred large data volumes. "
-                        f"This pattern is consistent with data exfiltration but may reflect "
-                        f"authorized backup or reporting activity. Requires investigator review."
+                        f"[INVESTIGATIVE LEAD] User '{user}' authenticated successfully "
+                        f"and within {WINDOW_SEC // 60} minutes transferred/exported files or triggered "
+                        f"sensitive database queries. Requires investigator review."
                     ),
                     involved_event_ids=[e.event_id for e in involved],
                     hosts=hosts,
