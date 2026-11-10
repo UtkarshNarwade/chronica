@@ -11,7 +11,7 @@ import argparse
 import os
 import sys
 from pathlib import Path
-from typing import List, Tuple
+from typing import List
 
 # Ensure repository root is on sys.path
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -19,13 +19,12 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from src.diagnostics.gap_analysis import ParsingCoverageStats
-from src.evidence.verification import verify_evidence_integrity
 from src.pipeline import ForensicPipeline
 from src.reporting.csv_export import export_timeline_csv
 from src.reporting.json_export import export_investigation_json
 from src.reporting.markdown_export import export_markdown_report
 from src.reporting.pdf_export import export_pdf_report
-from src.storage.repository import InvestigationMetadata, InvestigationRepository
+from src.storage.repository import InvestigationRepository
 
 
 def parse_args() -> argparse.Namespace:
@@ -137,112 +136,137 @@ def main() -> int:
     total_events = 0
     total_duplicates_skipped = 0
 
-    for tf in target_files:
-        try:
-            raw_bytes = tf.read_bytes()
-        except Exception as e:
-            print(f"[ERROR] Failed to read {tf}: {e}", file=sys.stderr)
-            continue
+    try:
+        for tf in target_files:
+            try:
+                raw_bytes = tf.read_bytes()
+            except Exception as e:
+                print(f"[ERROR] Failed to read {tf}: {e}", file=sys.stderr)
+                continue
 
-        pe, evs = pipeline.ingest_evidence_bytes(
+            pe, evs = pipeline.ingest_evidence_bytes(
+                investigation_id=args.case_id,
+                filename=tf.name,
+                data=raw_bytes,
+                assigned_timezone=args.timezone,
+            )
+            if len(evs) == 0:
+                total_duplicates_skipped += 1
+            else:
+                total_ingested += 1
+                total_events += len(evs)
+                print(f"  [+] Ingested '{tf.name}': {len(evs)} events (SHA-256: {pe.sha256_digest[:16]}...)")
+
+        print(f"\nIngestion Complete: {total_ingested} artifact(s) indexed ({total_events} events).")
+        if total_duplicates_skipped > 0:
+            print(f"  (*) {total_duplicates_skipped} duplicate file(s) skipped by cryptographic invariant.")
+
+        # Execute timeline analysis & clock-skew synchronization
+        print("\nExecuting timeline assembly, transitive clock-skew sync, and diagnostics...")
+        analysis = pipeline.analyze_investigation(
             investigation_id=args.case_id,
-            filename=tf.name,
-            data=raw_bytes,
-            assigned_timezone=args.timezone,
+            reference_source=args.reference_source,
+            clock_skew_enabled=True,
         )
-        if len(evs) == 0:
-            total_duplicates_skipped += 1
-        else:
-            total_ingested += 1
-            total_events += len(evs)
-            print(f"  [+] Ingested '{tf.name}': {len(evs)} events (SHA-256: {pe.sha256_digest[:16]}...)")
 
-    print(f"\nIngestion Complete: {total_ingested} artifact(s) indexed ({total_events} events).")
-    if total_duplicates_skipped > 0:
-        print(f"  (*) {total_duplicates_skipped} duplicate file(s) skipped by cryptographic invariant.")
+        events = analysis.get("events", [])
+        diagnostics = analysis.get("diagnostics", [])
+        coverage_stats = analysis.get("coverage_stats") or ParsingCoverageStats(0, 0, 0, 0, 0, 0)
+        skew_estimates = analysis.get("skew_estimates", {})
+        anchors = analysis.get("anchors", [])
+        integrity_summary = analysis.get("integrity_summary")
+        manifest = repo.get_manifest(args.case_id)
+        audit_ledger = repo.get_audit_ledger(args.case_id)
+        chain_entries = audit_ledger.list_entries()
 
-    # Execute timeline analysis & clock-skew synchronization
-    print("\nExecuting timeline assembly, transitive clock-skew sync, and diagnostics...")
-    analysis = pipeline.analyze_investigation(
-        investigation_id=args.case_id,
-        reference_source=args.reference_source,
-        clock_skew_enabled=True,
-    )
+        # Verify audit chain integrity
+        chain_ok, chain_cnt, chain_err = audit_ledger.verify_chain()
+        integ_ok = integrity_summary.all_verified if integrity_summary else True
 
-    events = analysis.get("events", [])
-    diagnostics = analysis.get("diagnostics", [])
-    coverage_stats = analysis.get("coverage_stats") or ParsingCoverageStats(0, 0, 0, 0, 0, 0)
-    skew_estimates = analysis.get("skew_estimates", {})
-    anchors = analysis.get("anchors", [])
-    integrity_summary = analysis.get("integrity_summary")
-    manifest = repo.get_manifest(args.case_id)
-    audit_ledger = repo.get_audit_ledger(args.case_id)
-    chain_entries = audit_ledger.list_entries()
+        print("\n" + "=" * 70)
+        print("FORENSIC TELEMETRY & INTEGRITY AUDIT")
+        print("=" * 70)
+        print(f"Cryptographic Hash Status:  {'VERIFIED (All Hashes Match)' if integ_ok else 'FAILED (Integrity Mismatch)'}")
+        print(f"Audit Chain-of-Custody:     {'INTACT (' + str(chain_cnt) + ' Blocks Verified)' if chain_ok else 'BROKEN at: ' + str(chain_err)}")
+        print(f"Total Normalized Events:    {len(events):,}")
+        print(f"Parsing Coverage:           {coverage_stats.parsing_success_rate}%")
+        print(f"Clock-Skew Hosts Resolved:  {len(skew_estimates)}")
+        print(f"Diagnostic Findings:        {len(diagnostics)}")
 
-    # Verify audit chain integrity
-    chain_ok, chain_cnt, chain_err = audit_ledger.verify_chain()
-    integ_ok = integrity_summary.all_verified if integrity_summary else True
+        # Generate Reports
+        print("\nGenerating forensic export package...")
 
-    print("\n" + "=" * 70)
-    print("FORENSIC TELEMETRY & INTEGRITY AUDIT")
-    print("=" * 70)
-    print(f"Cryptographic Hash Status:  {'VERIFIED (All Hashes Match)' if integ_ok else 'FAILED (Integrity Mismatch)'}")
-    print(f"Audit Chain-of-Custody:     {'INTACT (' + str(chain_cnt) + ' Blocks Verified)' if chain_ok else 'BROKEN at: ' + str(chain_err)}")
-    print(f"Total Normalized Events:    {len(events):,}")
-    print(f"Parsing Coverage:           {coverage_stats.parsing_success_rate}%")
-    print(f"Clock-Skew Hosts Resolved:  {len(skew_estimates)}")
-    print(f"Diagnostic Findings:        {len(diagnostics)}")
+        pdf_file = output_dir / f"{args.case_id}_report.pdf"
+        md_file = output_dir / f"{args.case_id}_report.md"
+        csv_file = output_dir / f"{args.case_id}_timeline.csv"
+        json_file = output_dir / f"{args.case_id}_backup.json"
 
-    # Generate Reports
-    print("\nGenerating forensic export package...")
+        pdf_bytes = export_pdf_report(
+            metadata=meta,
+            manifest=manifest,
+            events=events,
+            diagnostics=diagnostics,
+            coverage_stats=coverage_stats,
+            skew_estimates=skew_estimates,
+            integrity_summary=integrity_summary,
+        )
+        pdf_file.write_bytes(pdf_bytes)
+        print(f"  [+] PDF Report:      {pdf_file}")
 
-    pdf_file = output_dir / f"{args.case_id}_report.pdf"
-    md_file = output_dir / f"{args.case_id}_report.md"
-    csv_file = output_dir / f"{args.case_id}_timeline.csv"
-    json_file = output_dir / f"{args.case_id}_backup.json"
+        md_text = export_markdown_report(
+            metadata=meta,
+            manifest=manifest,
+            events=events,
+            diagnostics=diagnostics,
+            coverage_stats=coverage_stats,
+            anchors=anchors,
+            skew_estimates=skew_estimates,
+            integrity_summary=integrity_summary,
+            audit_entries=chain_entries,
+        )
+        md_file.write_text(md_text, encoding="utf-8")
+        print(f"  [+] Markdown Report: {md_file}")
 
-    pdf_bytes = export_pdf_report(
-        metadata=meta,
-        manifest=manifest,
-        events=events,
-        diagnostics=diagnostics,
-        coverage_stats=coverage_stats,
-        skew_estimates=skew_estimates,
-        integrity_summary=integrity_summary,
-    )
-    pdf_file.write_bytes(pdf_bytes)
-    print(f"  [+] PDF Report:      {pdf_file}")
+        csv_text = export_timeline_csv(events)
+        csv_file.write_text(csv_text, encoding="utf-8")
+        print(f"  [+] CSV Timeline:    {csv_file}")
 
-    md_text = export_markdown_report(
-        metadata=meta,
-        manifest=manifest,
-        events=events,
-        diagnostics=diagnostics,
-        coverage_stats=coverage_stats,
-        anchors=anchors,
-        skew_estimates=skew_estimates,
-        integrity_summary=integrity_summary,
-        audit_entries=chain_entries,
-    )
-    md_file.write_text(md_text, encoding="utf-8")
-    print(f"  [+] Markdown Report: {md_file}")
+        json_text = export_investigation_json(
+            metadata=meta,
+            manifest=manifest,
+            events=events,
+            diagnostics=diagnostics,
+            coverage_stats=coverage_stats,
+            skew_estimates=skew_estimates,
+            integrity_summary=integrity_summary,
+            audit_entries=[e.to_dict() for e in chain_entries],
+            repo=repo,
+        )
+        json_file.write_text(json_text, encoding="utf-8")
+        print(f"  [+] JSON Case Data:  {json_file}")
 
-    csv_text = export_timeline_csv(events)
-    csv_file.write_text(csv_text, encoding="utf-8")
-    print(f"  [+] CSV Timeline:    {csv_file}")
+        # Record export action in audit ledger (Rule 10)
+        audit_ledger.append(
+            action="INVESTIGATION_EXPORTED",
+            summary=f"Headless CLI forensic export generated for case '{args.case_id}'",
+            details={
+                "output_dir": str(output_dir),
+                "formats": ["pdf", "markdown", "csv", "json"],
+                "event_count": len(events),
+                "all_verified": integ_ok,
+                "chain_verified": chain_ok,
+            },
+        )
 
-    json_text = export_investigation_json(
-        metadata=meta,
-        manifest=manifest,
-        events=events,
-        diagnostics=diagnostics,
-        coverage_stats=coverage_stats,
-    )
-    json_file.write_text(json_text, encoding="utf-8")
-    print(f"  [+] JSON Case Data:  {json_file}")
+        if not integ_ok or not chain_ok:
+            print("\n[FAILURE] Evidence vault integrity or audit chain verification failed.\n")
+            return 1
 
-    print("\n[SUCCESS] Headless investigation successfully executed and exported.\n")
-    return 0
+        print("\n[SUCCESS] Headless investigation successfully executed and exported.\n")
+        return 0
+    except Exception as exc:
+        print(f"\n[CRITICAL ERROR] CLI execution aborted: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

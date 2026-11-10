@@ -663,6 +663,45 @@ tests/unit/test_archive_bomb_remediation.py::test_adversarial_windows_backslash_
 - Notes and surprises:
   `zf.read(info.filename)` and `tf.extractfile(member).read()` previously loaded entire uncompressed files into RAM before checking size limits, allowing small compressed archives to cause large memory spikes. Streaming decompression in 64KB chunks allows aborting immediately upon exceeding byte boundaries, keeping memory strictly bounded under 5MB.
 
+### Iteration 20 | Finding: F-19 | Started: 2026-11-10T11:30:00+05:30
+- Reproduction test: `tests/unit/test_backup_restore_and_cli_remediation.py`
+- Failing output (real, pasted):
+```text
+FAILED tests/unit/test_backup_restore_and_cli_remediation.py::test_reproduce_cli_exits_nonzero_on_tamper_or_chain_failure
+AssertionError: Expected non-zero exit code on compromised integrity, got 0
+FAILED tests/unit/test_backup_restore_and_cli_remediation.py::test_reproduce_json_backup_includes_skew_integrity_and_roundtrips
+TypeError: export_investigation_json() got an unexpected keyword argument 'repo'
+FAILED tests/unit/test_backup_restore_and_cli_remediation.py::test_reproduce_export_writes_audit_ledger_entry
+AssertionError: Expected INVESTIGATION_EXPORTED in ledger actions, found: ['CASE_CREATED', 'EVIDENCE_INGESTED']
+============================== 3 failed in 0.44s ==============================
+```
+- Change summary (files, why):
+  - `src/reporting/json_export.py`: Enhanced `export_investigation_json` to include clock skew analysis, evidence integrity verification results, complete audit ledger chain entries, and base64-encoded evidence files with SHA-256 verification digests.
+  - `src/reporting/json_export.py`: Implemented `restore_investigation_from_json(json_str_or_data, repo)` performing complete round-trip restoration of investigation metadata, evidence files with cryptographic hash verification and 0444 read-only permissions, manifest verification, timeline database events, and audit chain-of-custody anchors. Logs `INVESTIGATION_RESTORED` ledger entry.
+  - `src/evidence/manifest.py`: Added `EvidenceManifest.from_dict` classmethod supporting direct dictionary parsing with integrity digest verification.
+  - `scripts/chronica_cli.py`: Passed skew estimates, integrity summary, audit ledger entries, and repository into `export_investigation_json`. Appended `INVESTIGATION_EXPORTED` audit ledger entry. Enforced non-zero exit code (`return 1`) when evidence vault integrity or audit chain verification fails or when execution raises an unhandled error.
+  - `app.py`: Updated forensic report export generation in Module 9 to pass skew estimates, integrity summary, audit chain, and repository to `export_investigation_json`, and recorded `INVESTIGATION_EXPORTED` in the active audit ledger.
+  - `tests/unit/test_backup_restore_and_cli_remediation.py`: Added comprehensive unit and adversarial tests for CLI non-zero exit codes on vault tampering or broken audit chain, JSON export/restore round trip, audit logging of exports, payload tampering detection, and evidence-free backup restoration.
+- New test result (real, pasted):
+```text
+tests/unit/test_backup_restore_and_cli_remediation.py::test_reproduce_cli_exits_nonzero_on_tamper_or_chain_failure PASSED [ 16%]
+tests/unit/test_backup_restore_and_cli_remediation.py::test_reproduce_json_backup_includes_skew_integrity_and_roundtrips PASSED [ 33%]
+tests/unit/test_backup_restore_and_cli_remediation.py::test_reproduce_export_writes_audit_ledger_entry PASSED [ 50%]
+tests/unit/test_backup_restore_and_cli_remediation.py::test_adversarial_restore_detects_tampered_evidence_payload PASSED [ 66%]
+tests/unit/test_backup_restore_and_cli_remediation.py::test_adversarial_cli_exits_nonzero_on_broken_audit_chain PASSED [ 83%]
+tests/unit/test_backup_restore_and_cli_remediation.py::test_adversarial_restore_backup_without_evidence_files PASSED [100%]
+
+============================== 6 passed in 0.56s ==============================
+```
+- Full suite result (real, pasted, with counts):
+```text
+============================= 227 passed in 9.10s =============================
+```
+- Commit: pending
+- Status: DONE
+- Notes and surprises:
+  The CLI previously always printed "[SUCCESS]" and returned exit code 0 even when it detected a hash mismatch ("FAILED (Integrity Mismatch)") or a severed chain of custody. Now it fails closed with exit code 1 whenever either check fails or whenever an unexpected error occurs during execution. In addition, the JSON export previously omitted evidence files and had no restore path; it is now a complete, restorable forensic backup bundle.
+
 ## Open questions for the human
 (only things the agent genuinely cannot decide)
 

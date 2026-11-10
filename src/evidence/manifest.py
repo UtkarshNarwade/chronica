@@ -128,15 +128,8 @@ class EvidenceManifest:
             json.dump(data, f, indent=2)
 
     @classmethod
-    def load_from_file(cls, path: Union[str, Path], verify_digest: bool = True) -> EvidenceManifest:
-        """Load manifest from an existing JSON file, optionally verifying its internal SHA-256 digest."""
-        file_path = Path(path)
-        if not file_path.is_file():
-            raise FileNotFoundError(f"Manifest not found: {file_path}")
-
-        with open(file_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-
+    def from_dict(cls, data: Dict[str, Any], verify_digest: bool = True) -> EvidenceManifest:
+        """Create an EvidenceManifest from a structured dictionary."""
         entries = [
             EvidenceFileEntry.from_dict(e) for e in data.get("entries", [])
         ]
@@ -155,8 +148,20 @@ class EvidenceManifest:
             calculated_digest = manifest.calculate_manifest_digest()
             if recorded_digest.lower() != calculated_digest.lower():
                 raise ManifestIntegrityError(
-                    f"Manifest integrity verification failed for '{file_path}': "
+                    f"Manifest integrity verification failed: "
                     f"recorded SHA-256 '{recorded_digest}' does not match computed SHA-256 '{calculated_digest}'."
                 )
 
         return manifest
+
+    @classmethod
+    def load_from_file(cls, path: Union[str, Path], verify_digest: bool = True) -> EvidenceManifest:
+        """Load manifest from an existing JSON file, optionally verifying its internal SHA-256 digest."""
+        file_path = Path(path)
+        if not file_path.is_file():
+            raise FileNotFoundError(f"Manifest not found: {file_path}")
+
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        return cls.from_dict(data, verify_digest=verify_digest)

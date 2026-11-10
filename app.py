@@ -2305,6 +2305,21 @@ elif nav_section == "Forensic Reports & Export":
                 events=export_events,
                 diagnostics=diagnostics,
                 coverage_stats=effective_coverage,
+                skew_estimates=skew_estimates,
+                integrity_summary=integrity_summary,
+                audit_entries=[e.to_dict() for e in chain_entries],
+                repo=repo,
+            )
+            # Record export action in audit ledger (Rule 10)
+            active_ledger = repo.get_audit_ledger(active_inv.investigation_id)
+            active_ledger.append(
+                action="INVESTIGATION_EXPORTED",
+                summary=f"Forensic report bundle exported for case '{active_inv.investigation_id}'",
+                details={
+                    "formats": ["pdf", "markdown", "csv", "json"],
+                    "event_count": len(export_events),
+                    "manifest_sha256": manifest.calculate_manifest_digest(),
+                },
             )
             st.session_state["export_cache"] = {
                 "key": export_cache_key,
