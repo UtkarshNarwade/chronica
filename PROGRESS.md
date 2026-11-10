@@ -844,7 +844,7 @@ tests\unit\test_database_and_diagnostics_aggregation_remediation.py .... [ 57%]
 ```text
 ============================ 248 passed in 12.01s =============================
 ```
-- Commit: PENDING
+- Commit: de31adc fix(F-20): aggregate repetitive diagnostics, enable foreign keys, connection closing, and schema versioning
 - Status: DONE
 - Notes and surprises:
   In Python's standard `sqlite3`, using `with conn:` only manages a transaction, not the connection lifecycle itself, so connections remained open until garbage collection. Implementing `@contextmanager def connection()` with a `finally: conn.close()` block prevents file lock retention on Windows. When enabling `PRAGMA foreign_keys = ON`, `restore_investigation_from_json` needed to ensure the parent investigation record existed before child evidence files were inserted.
