@@ -157,6 +157,7 @@ def restore_investigation_from_json(
     meta = InvestigationMetadata.from_dict(inv_data)
     with open(inv_dir / "investigation.json", "w", encoding="utf-8") as f:
         json.dump(meta.to_dict(), f, indent=2)
+    repo.db.upsert_investigation(meta)
 
     # 2. Restore preserved evidence files
     ev_dir = repo.get_evidence_dir(inv_id)

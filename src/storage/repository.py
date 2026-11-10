@@ -144,9 +144,10 @@ class InvestigationRepository:
             reference_source=reference_source,
         )
 
-        # Save metadata JSON
+        # Save metadata JSON and sync SQLite table
         with open(inv_dir / "investigation.json", "w", encoding="utf-8") as f:
             json.dump(meta.to_dict(), f, indent=2)
+        self.db.upsert_investigation(meta)
 
         # Initialize empty evidence manifest
         manifest = EvidenceManifest(investigation_id=investigation_id)
@@ -184,6 +185,7 @@ class InvestigationRepository:
         meta.last_updated_utc = datetime.now(timezone.utc).isoformat()
         with open(inv_dir / "investigation.json", "w", encoding="utf-8") as f:
             json.dump(meta.to_dict(), f, indent=2)
+        self.db.upsert_investigation(meta)
 
     def get_tombstone_ledger(self):
         """Get the surviving tombstone audit ledger for deleted investigations."""
@@ -229,8 +231,8 @@ class InvestigationRepository:
             },
         )
 
-        # 3. Delete events from SQLite
-        self.db.delete_investigation_events(investigation_id)
+        # 3. Delete events and records from SQLite
+        self.db.delete_investigation_record(investigation_id)
 
         # 4. Delete filesystem directory
         if inv_dir.is_dir():
@@ -255,9 +257,16 @@ class InvestigationRepository:
         return EvidenceManifest(investigation_id=investigation_id)
 
     def save_manifest(self, investigation_id: str, manifest: EvidenceManifest) -> None:
-        """Save the evidence manifest."""
+        """Save the evidence manifest and sync with SQLite evidence_files table."""
         manifest_path = self._get_inv_dir(investigation_id) / "manifest.json"
         manifest.save_to_file(manifest_path)
+        meta = self.get_investigation(investigation_id)
+        if meta:
+            self.db.upsert_investigation(meta)
+        else:
+            self.db.ensure_investigation_record(investigation_id)
+        for entry in manifest.entries:
+            self.db.upsert_evidence_file(entry, investigation_id)
 
     def get_evidence_dir(self, investigation_id: str) -> Path:
         """Return the absolute path to preserved evidence."""
@@ -326,8 +335,12 @@ class InvestigationRepository:
 
     def save_events(self, investigation_id: str, events: List[Event]) -> None:
         """Save events to the database and update investigation timestamp."""
-        self.db.save_events(investigation_id, events)
         meta = self.get_investigation(investigation_id)
+        if meta:
+            self.db.upsert_investigation(meta)
+        else:
+            self.db.ensure_investigation_record(investigation_id)
+        self.db.save_events(investigation_id, events)
         if meta:
             self.update_investigation(meta)
 

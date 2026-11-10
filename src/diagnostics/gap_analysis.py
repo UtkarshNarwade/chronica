@@ -243,6 +243,7 @@ class EvidenceGapAnalyzer:
 
         # Event-Level Diagnostics: A, B, C, D, E, I
         seen_texts: Dict[str, str] = {}
+        category_d_groups: Dict[tuple, List[Event]] = {}
 
         for ev in events:
             # A: Parse failure
@@ -293,24 +294,20 @@ class EvidenceGapAnalyzer:
                 )
                 diag_idx += 1
 
-            # D: Timestamp ambiguity
+            # D: Timestamp ambiguity (collected for aggregation if repetitive)
             if ev.normalization_status in (
                 NormalizationStatus.NORMALIZED_ASSUMED_TZ.value,
                 NormalizationStatus.NORMALIZED_CONFIGURED_TZ.value,
                 NormalizationStatus.AMBIGUOUS_DST.value,
+                NormalizationStatus.AMBIGUOUS_TIMESTAMP.value,
             ) or ev.year_inferred:
-                diagnostics.append(
-                    DiagnosticItem(
-                        diag_id=f"DIAG-D-{diag_idx:03d}",
-                        category=DiagnosticCategory.D_TIMESTAMP_AMBIGUITY,
-                        severity=DiagnosticSeverity.INFO,
-                        affected_target=f"{ev.original_filename}:L{ev.line_number}",
-                        explanation="Timestamp interpretation required inference (timezone assumption, inferred year, or DST boundary).",
-                        supporting_details=f"Original: '{ev.original_timestamp_str}' | Assumed TZ: '{ev.timezone_assumed}' | Year inferred: {ev.year_inferred}",
-                        suggested_action="Confirm source system local timezone in investigation settings.",
-                    )
+                d_key = (
+                    ev.original_filename or "unknown",
+                    ev.normalization_status,
+                    ev.timezone_assumed or "",
+                    ev.year_inferred,
                 )
-                diag_idx += 1
+                category_d_groups.setdefault(d_key, []).append(ev)
 
             # E: Missing-field warning
             if ev.parsing_status in ("SUCCESS", "PARTIAL"):
@@ -345,6 +342,38 @@ class EvidenceGapAnalyzer:
                 diag_idx += 1
             else:
                 seen_texts[ev.raw_text] = f"{ev.original_filename}:L{ev.line_number}"
+
+        # Emit Category D diagnostics: aggregated when repetitive (>3 records per file/type)
+        for (fname, norm_status, tz_assumed, yr_inf), group_evs in category_d_groups.items():
+            if len(group_evs) <= 3:
+                for gev in group_evs:
+                    diagnostics.append(
+                        DiagnosticItem(
+                            diag_id=f"DIAG-D-{diag_idx:03d}",
+                            category=DiagnosticCategory.D_TIMESTAMP_AMBIGUITY,
+                            severity=DiagnosticSeverity.INFO,
+                            affected_target=f"{gev.original_filename}:L{gev.line_number}",
+                            explanation="Timestamp interpretation required inference (timezone assumption, inferred year, or DST boundary).",
+                            supporting_details=f"Original: '{gev.original_timestamp_str}' | Assumed TZ: '{gev.timezone_assumed}' | Year inferred: {gev.year_inferred}",
+                            suggested_action="Confirm source system local timezone in investigation settings.",
+                        )
+                    )
+                    diag_idx += 1
+            else:
+                count = len(group_evs)
+                line_samples = ", ".join(f"L{e.line_number}" for e in group_evs[:3])
+                diagnostics.append(
+                    DiagnosticItem(
+                        diag_id=f"DIAG-D-{diag_idx:03d}",
+                        category=DiagnosticCategory.D_TIMESTAMP_AMBIGUITY,
+                        severity=DiagnosticSeverity.INFO,
+                        affected_target=f"{fname} ({count} records, e.g. {line_samples}...)",
+                        explanation=f"{count} records in '{fname}' required timestamp inference ({norm_status}, timezone '{tz_assumed or 'None'}', year_inferred={yr_inf}).",
+                        supporting_details=f"{count} occurrences. First 3 examples: {line_samples}. Assumed TZ: '{tz_assumed}' | Year inferred: {yr_inf}.",
+                        suggested_action="Confirm source system local timezone in investigation settings.",
+                    )
+                )
+                diag_idx += 1
 
         # F: Potential Coverage Gaps (analyzed per source host)
         hosts = {ev.source_host or ev.original_filename for ev in events}

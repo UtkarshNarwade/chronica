@@ -807,10 +807,47 @@ CHRONICA FORENSIC HEURISTIC ENGINE BENCHMARK (F-04)
    100,000 |         8.990s |         11,123 ev/s |     2000 | PASS (<60s)
 ================================================================================
 ```
-- Commit: a27ea48 fix(F-04): cached event epochs, sliding-window heuristics, and bench script for 100k events in <9s
+- Commit: c773cb9 fix(F-04): cached event epochs, sliding-window heuristics, and bench script for 100k events in <9s
 - Status: DONE
 - Notes and surprises:
   The quadratic bottleneck in `_detect_sensitive_data_export` and `_detect_privilege_escalation` was caused by running full regex searches across all N events for every authentication event (A * N regex invocations) while repeatedly re-parsing the same ISO timestamp strings. Pre-filtering matching candidates in O(N) once and using `bisect` for the temporal window reduced 100k event analysis time down to 8.99s, far exceeding the 60s benchmark requirement.
+
+### Iteration 24 | Finding: F-20 | Started: 2026-11-10T12:55:00+05:30
+- Reproduction test: `tests/unit/test_database_and_diagnostics_aggregation_remediation.py`
+- Failing output (real, pasted):
+```text
+FAILED tests/unit/test_database_and_diagnostics_aggregation_remediation.py::test_reproduce_diagnostics_aggregation_when_repetitive
+AssertionError: Expected repetitive diagnostics to be aggregated (< 100 entries), got 5000
+FAILED tests/unit/test_database_and_diagnostics_aggregation_remediation.py::test_reproduce_database_foreign_keys_and_connection_closing
+AssertionError: Foreign keys must be ON: PRAGMA foreign_keys returned 0
+FAILED tests/unit/test_database_and_diagnostics_aggregation_remediation.py::test_reproduce_database_schema_version_and_migrations
+sqlite3.OperationalError: no such table: schema_version
+FAILED tests/unit/test_database_and_diagnostics_aggregation_remediation.py::test_reproduce_investigations_and_evidence_files_tables_used
+AssertionError: Expected investigations table to contain records
+============================== 4 failed in 0.35s ==============================
+```
+- Change summary (files, why):
+  - `src/diagnostics/gap_analysis.py`: Aggregated repetitive Category D timestamp ambiguity and non-standard format diagnostics by grouping on `(file, status, tz, yr)`. If a file encounters >3 repetitive diagnostics of the same type, an aggregated diagnostic record is generated showing total occurrences and the first 3 line examples (`L1, L2, L3...`), preventing thousands of redundant diagnostic alerts.
+  - `src/storage/database.py`: Enforced `PRAGMA foreign_keys = ON;` on every SQLite connection. Implemented context-manager `@contextmanager def connection()` yielding `sqlite3.Connection` and guaranteeing `conn.close()` upon exit to prevent leaked file handles.
+  - `src/storage/database.py`: Created `schema_version` table and implemented forward-only migrations (`_migrate_v1`, setting version to 1). Added `get_schema_version()`.
+  - `src/storage/database.py` & `src/storage/repository.py`: Populated and maintained `investigations` and `evidence_files` tables during `create_investigation`, `update_investigation`, `save_manifest`, and `save_events`. Enforced cascading foreign key integrity.
+  - `src/reporting/json_export.py`: Upserted parent investigation record prior to saving manifest child evidence files during JSON backup restoration.
+  - `tests/unit/test_database_and_diagnostics_aggregation_remediation.py`: Added comprehensive unit and adversarial tests covering diagnostic aggregation limits, foreign key enforcement, connection auto-closing, schema migration idempotency, and cascading integrity.
+- New test result (real, pasted):
+```text
+tests\unit\test_database_and_diagnostics_aggregation_remediation.py .... [ 57%]
+...                                                                      [100%]
+
+============================== 7 passed in 0.26s ==============================
+```
+- Full suite result (real, pasted, with counts):
+```text
+============================ 248 passed in 12.01s =============================
+```
+- Commit: PENDING
+- Status: DONE
+- Notes and surprises:
+  In Python's standard `sqlite3`, using `with conn:` only manages a transaction, not the connection lifecycle itself, so connections remained open until garbage collection. Implementing `@contextmanager def connection()` with a `finally: conn.close()` block prevents file lock retention on Windows. When enabling `PRAGMA foreign_keys = ON`, `restore_investigation_from_json` needed to ensure the parent investigation record existed before child evidence files were inserted.
 
 ## Open questions for the human
 (only things the agent genuinely cannot decide)
