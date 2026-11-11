@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import gzip
 import io
+import math
 import re
 import tarfile
 import uuid
@@ -817,11 +818,14 @@ class ForensicPipeline:
                 if hop_est.status == "ESTIMATED" and hop_est.estimated_offset_sec is not None:
                     inter_est = skew_estimates[inter_src]
                     total_offset = round((inter_est.estimated_offset_sec or 0.0) + hop_est.estimated_offset_sec, 3)
-                    import math
                     total_mad = round(math.hypot(inter_est.spread_mad_sec or 0.0, hop_est.spread_mad_sec or 0.0), 3)
-                    total_unc = round((inter_est.uncertainty_sec or inter_est.spread_mad_sec or 0.0) + (hop_est.uncertainty_sec or hop_est.spread_mad_sec or 0.0), 3)
-                    tol_sec = latency_tolerance_sec if latency_tolerance_sec is not None else 2.0
-                    within_tol = bool(tol_sec > 0 and abs(total_offset) <= tol_sec)
+                    unc_inter = inter_est.uncertainty_sec or inter_est.spread_mad_sec or 0.0
+                    unc_hop = hop_est.uncertainty_sec or hop_est.spread_mad_sec or 0.0
+                    total_unc = round(unc_inter + unc_hop, 3)
+                    within_tol = bool(
+                        skew_analyzer.latency_tolerance_sec > 0
+                        and abs(total_offset) <= skew_analyzer.latency_tolerance_sec
+                    )
                     min_off: Optional[float] = None
                     if inter_est.min_offset_sec is not None and hop_est.min_offset_sec is not None:
                         min_off = round(inter_est.min_offset_sec + hop_est.min_offset_sec, 3)
