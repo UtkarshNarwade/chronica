@@ -406,6 +406,12 @@ class ForensicPipeline:
                     parser = self.parser_registry.get_parser("syslog")
                     detected_format = "syslog"
 
+            if parser is None:
+                from src.parsers.syslog_parser import SyslogParser
+                parser = SyslogParser()
+                detected_format = "syslog"
+            assert parser is not None, "Failed to initialize parser"
+
             # 4. Parse records preserving line numbers (strict line iterator)
             ingest_context = {
                 "source_host": source_host,
@@ -468,7 +474,7 @@ class ForensicPipeline:
                 )
 
                 # Combine warnings
-                all_warnings = list(prec.warnings) + list(norm_res.warnings)
+                all_warnings = list(prec.warnings or []) + list(norm_res.warnings or [])
                 if rep_char_count > 0:
                     all_warnings.append(
                         f"File decoded with {encoding_used}; contains {rep_char_count} invalid byte sequence(s) "
@@ -486,7 +492,7 @@ class ForensicPipeline:
                     "replacement_char_count": rep_char_count,
                 }
 
-                extra_fields = dict(prec.extra_fields)
+                extra_fields = dict(prec.extra_fields or {})
                 if host_inferred:
                     extra_fields["host_inferred_from_file"] = True
                     provenance["host_inferred_from_file"] = True
@@ -563,14 +569,15 @@ class ForensicPipeline:
             return preserved, events
         except Exception:
             # Atomic rollback: clean up staged files, manifest entries, and partial database state
-            collector.rollback_preserved(preserved)
-            self.repo.db.delete_evidence_events(investigation_id, preserved.evidence_id)
-            try:
-                m_rb = self.repo.get_manifest(investigation_id)
-                m_rb.entries = [e for e in m_rb.entries if e.evidence_id != preserved.evidence_id]
-                self.repo.save_manifest(investigation_id, m_rb)
-            except Exception:
-                pass
+            if preserved is not None:
+                collector.rollback_preserved(preserved)
+                self.repo.db.delete_evidence_events(investigation_id, preserved.evidence_id)
+                try:
+                    m_rb = self.repo.get_manifest(investigation_id)
+                    m_rb.entries = [e for e in m_rb.entries if e.evidence_id != preserved.evidence_id]
+                    self.repo.save_manifest(investigation_id, m_rb)
+                except Exception:
+                    pass
             raise
 
     def _ingest_archive_pipeline(
@@ -592,6 +599,7 @@ class ForensicPipeline:
 
         collector = self.repo.get_evidence_collector(investigation_id)
         archive_preserved = collector.collect_from_bytes(data, original_filename=filename, staging=True)
+        ingested_members: List[PreservedEvidence] = []
 
         try:
             members = self.expand_archive_bytes(
@@ -603,7 +611,7 @@ class ForensicPipeline:
             for m_name, m_bytes in members:
                 m_sha = calculate_sha256_bytes(m_bytes)
                 member_hashes[m_name] = m_sha
-                _, m_events = self.ingest_evidence_bytes(
+                m_pres, m_events = self.ingest_evidence_bytes(
                     investigation_id=investigation_id,
                     filename=m_name,
                     data=m_bytes,
@@ -613,6 +621,7 @@ class ForensicPipeline:
                     source_host=source_host,
                     archive_depth=archive_depth + 1,
                 )
+                ingested_members.append(m_pres)
                 all_extracted_events.extend(m_events)
 
             # Promote original archive file
@@ -655,11 +664,23 @@ class ForensicPipeline:
 
             return archive_preserved, all_extracted_events
         except Exception:
-            collector.rollback_preserved(archive_preserved)
-            self.repo.db.delete_evidence_events(investigation_id, archive_preserved.evidence_id)
+            if archive_preserved is not None:
+                collector.rollback_preserved(archive_preserved)
+                self.repo.db.delete_evidence_events(investigation_id, archive_preserved.evidence_id)
+            for m_pres in ingested_members:
+                try:
+                    collector.rollback_preserved(m_pres)
+                    self.repo.db.delete_evidence_events(investigation_id, m_pres.evidence_id)
+                except Exception:
+                    pass
             try:
                 m_rb = self.repo.get_manifest(investigation_id)
-                m_rb.entries = [e for e in m_rb.entries if e.evidence_id != archive_preserved.evidence_id]
+                rolled_back_ids = set()
+                if archive_preserved is not None:
+                    rolled_back_ids.add(archive_preserved.evidence_id)
+                for m in ingested_members:
+                    rolled_back_ids.add(m.evidence_id)
+                m_rb.entries = [e for e in m_rb.entries if e.evidence_id not in rolled_back_ids]
                 self.repo.save_manifest(investigation_id, m_rb)
             except Exception:
                 pass
@@ -799,17 +820,14 @@ class ForensicPipeline:
                     import math
                     total_mad = round(math.hypot(inter_est.spread_mad_sec or 0.0, hop_est.spread_mad_sec or 0.0), 3)
                     total_unc = round((inter_est.uncertainty_sec or inter_est.spread_mad_sec or 0.0) + (hop_est.uncertainty_sec or hop_est.spread_mad_sec or 0.0), 3)
-                    within_tol = bool(latency_tolerance_sec > 0 and abs(total_offset) <= latency_tolerance_sec)
-                    min_off = (
-                        round((inter_est.min_offset_sec or 0.0) + (hop_est.min_offset_sec or 0.0), 3)
-                        if inter_est.min_offset_sec is not None and hop_est.min_offset_sec is not None
-                        else None
-                    )
-                    max_off = (
-                        round((inter_est.max_offset_sec or 0.0) + (hop_est.max_offset_sec or 0.0), 3)
-                        if inter_est.max_offset_sec is not None and hop_est.max_offset_sec is not None
-                        else None
-                    )
+                    tol_sec = latency_tolerance_sec if latency_tolerance_sec is not None else 2.0
+                    within_tol = bool(tol_sec > 0 and abs(total_offset) <= tol_sec)
+                    min_off: Optional[float] = None
+                    if inter_est.min_offset_sec is not None and hop_est.min_offset_sec is not None:
+                        min_off = round(inter_est.min_offset_sec + hop_est.min_offset_sec, 3)
+                    max_off: Optional[float] = None
+                    if inter_est.max_offset_sec is not None and hop_est.max_offset_sec is not None:
+                        max_off = round(inter_est.max_offset_sec + hop_est.max_offset_sec, 3)
 
                     skew_estimates[unres_src] = ClockSkewEstimate(
                         target_source=unres_src,

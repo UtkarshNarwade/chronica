@@ -181,6 +181,11 @@ def test_adversarial_corrupt_archive_member_rolls_back_archive_and_members():
         # Original archive file must NOT remain as an orphan
         assert not (ev_dir / "bad_bundle.zip").exists()
         assert not any(f.name.endswith("bad_bundle.zip") for f in ev_dir.iterdir())
+        # Member 'ok.log' processed before failure must also be cleanly rolled back
+        assert not any("ok.log" in f.name for f in ev_dir.iterdir())
+        manifest = repo.get_manifest(meta.investigation_id)
+        assert len(manifest.entries) == 0, f"Expected 0 manifest entries, got {len(manifest.entries)}"
+        assert len(repo.load_events(meta.investigation_id)) == 0, "Expected 0 events in database after rollback"
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
